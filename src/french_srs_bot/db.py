@@ -22,7 +22,7 @@ def connect(url: str) -> psycopg.Connection:
         autocommit=True,
         row_factory=dict_row,
         prepare_threshold=None,
-        connect_timeout=10,
+        connect_timeout=30,
         keepalives=1,
         keepalives_idle=30,
         keepalives_interval=10,

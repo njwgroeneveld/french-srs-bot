@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
+
+import psycopg
 
 from . import db
 from .bot import build_application
 from .config import load_secrets, load_settings
 from .scheduler import register_jobs
+
+
+def migrate_with_retries(database_url: str, attempts: int = 10, delay: float = 15.0) -> list[str]:
+    """Run migrations, retrying while the database is unreachable (the node's Wi-Fi drops out)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            with db.connect(database_url) as conn:
+                return db.run_migrations(conn)
+        except psycopg.OperationalError:
+            if attempt == attempts:
+                raise
+            logging.warning("database unreachable at startup (attempt %s/%s), retrying", attempt, attempts)
+            time.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def main() -> None:
@@ -19,8 +36,7 @@ def main() -> None:
     logging.getLogger("telegram.ext.Updater").setLevel(logging.INFO)
     settings = load_settings(Path(os.environ.get("SETTINGS_PATH", "settings.yaml")))
     secrets = load_secrets()
-    with db.connect(secrets.database_url) as conn:
-        applied = db.run_migrations(conn)
+    applied = migrate_with_retries(secrets.database_url)
     logging.info("migrations applied: %s", applied or "none")
     app = build_application(settings, secrets)
     register_jobs(app, settings)
