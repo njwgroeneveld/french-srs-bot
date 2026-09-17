@@ -58,12 +58,20 @@ def today_stats(conn: psycopg.Connection, settings: Settings, now: datetime) -> 
     return db.day_stats(conn, day_start=start, day_end=end)
 
 
-def pick_next(conn: psycopg.Connection, settings: Settings, now: datetime, *, first_of_batch: bool) -> Ask | None:
+def _eligible_now(
+    conn: psycopg.Connection, settings: Settings, now: datetime
+) -> tuple[list[CardView], CardView | None]:
+    """Due cards and the new card allowed right now (None when the new-card allowance is used up)."""
     start, end = day_bounds(now, settings.timezone)
     stats = db.day_stats(conn, day_start=start, day_end=end)
     due = db.due_cards(conn, now=now, day_start=start)
     new_allowed = max(settings.daily_new, settings.daily_goal - (stats.reviews + len(due)))
     new_card = db.next_new_card(conn, now=now, day_start=start) if stats.new < new_allowed else None
+    return due, new_card
+
+
+def pick_next(conn: psycopg.Connection, settings: Settings, now: datetime, *, first_of_batch: bool) -> Ask | None:
+    due, new_card = _eligible_now(conn, settings, now)
     if first_of_batch and new_card is not None:
         return Ask(new_card, is_new=True)
     if due:
@@ -100,7 +108,9 @@ def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime) -> None:
     db.set_pending(conn, card.card_id, now)
 
 
-def acknowledge_intro(conn: psycopg.Connection, card_id: int, now: datetime) -> CardView | None:
+def acknowledge_intro(
+    conn: psycopg.Connection, settings: Settings, card_id: int, now: datetime
+) -> CardView | None:
     """User pressed "Begrepen". Returns the card to quiz, or None for a stale button."""
     card = db.get_card(conn, card_id)
     if card is None:
@@ -108,8 +118,11 @@ def acknowledge_intro(conn: psycopg.Connection, card_id: int, now: datetime) -> 
     pending = db.get_bot_state(conn).pending_card_id
     if pending not in (None, card_id):
         return None
-    if card.introduced_at is not None and pending != card_id:
-        return None
+    if pending != card_id:
+        # Not the pending card: only accept it if it is exactly the new card that may be introduced now.
+        _due, new_card = _eligible_now(conn, settings, now)
+        if new_card is None or new_card.card_id != card_id:
+            return None
     with conn.transaction():
         db.introduce_card(conn, card_id, now)
         db.set_pending(conn, card_id, now)

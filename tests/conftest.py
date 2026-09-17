@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from dotenv import load_dotenv
+from psycopg.conninfo import conninfo_to_dict
 
 from french_srs_bot import db
 from french_srs_bot.config import Settings
@@ -16,7 +17,7 @@ def conn():
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL not set")
-    if "test" not in url:
+    if "test" not in conninfo_to_dict(url).get("dbname", ""):
         pytest.fail("TEST_DATABASE_URL must point to a test database: this fixture drops schema french")
     with db.connect(url) as connection:
         connection.execute("DROP SCHEMA IF EXISTS french CASCADE")

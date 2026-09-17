@@ -86,7 +86,7 @@ async def on_intro_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     now = utcnow()
     try:
         with db.connect(deps.secrets.database_url) as conn:
-            card = session.acknowledge_intro(conn, card_id, now)
+            card = session.acknowledge_intro(conn, deps.settings, card_id, now)
     except psycopg.OperationalError:
         log.exception("database unavailable on intro button")
         await send(context.bot, update.effective_chat.id, messages.database_unavailable())

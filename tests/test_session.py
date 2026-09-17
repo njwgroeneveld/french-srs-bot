@@ -36,7 +36,7 @@ def do_card(conn, settings, scheduler, step, text, now):
     """Play one card like the bot does. Returns the Answered result."""
     assert isinstance(step, session.Ask)
     if step.is_new:
-        assert session.acknowledge_intro(conn, step.card.card_id, now) is not None
+        assert session.acknowledge_intro(conn, settings, step.card.card_id, now) is not None
     else:
         session.mark_asked(conn, step.card, now)
     return session.answer(conn, settings, scheduler, text, now)
@@ -144,7 +144,7 @@ def test_batch_size_limits_cards_per_batch(conn, settings, scheduler, add_items)
 def test_pending_card_is_asked_again_on_new_batch(conn, settings, add_items):
     add_items([("le chien", "de hond"), ("le chat", "de kat")])
     step = session.start_batch(conn, settings, MORNING)
-    session.acknowledge_intro(conn, step.card.card_id, MORNING)
+    session.acknowledge_intro(conn, settings, step.card.card_id, MORNING)
     again = session.start_batch(conn, settings, MORNING + timedelta(hours=5))
     assert again.card.card_id == step.card.card_id and again.is_new is False
 
@@ -152,9 +152,42 @@ def test_pending_card_is_asked_again_on_new_batch(conn, settings, add_items):
 def test_stale_intro_button_is_ignored(conn, settings, add_items):
     add_items([("le chien", "de hond"), ("le chat", "de kat")])
     first = session.start_batch(conn, settings, MORNING)
-    session.acknowledge_intro(conn, first.card.card_id, MORNING)
+    session.acknowledge_intro(conn, settings, first.card.card_id, MORNING)
     other = db.next_new_card(conn, now=MORNING, day_start=session.day_bounds(MORNING, settings.timezone)[0])
-    assert session.acknowledge_intro(conn, other.card_id, MORNING) is None
+    assert session.acknowledge_intro(conn, settings, other.card_id, MORNING) is None
+
+
+def test_stale_intro_button_respects_eligibility(conn, settings, scheduler, add_items):
+    (item,) = add_items([("le chien", "de hond")])
+    fr_nl = card_id(conn, item, "fr_nl")
+    nl_fr = card_id(conn, item, "nl_fr")
+    # fr_nl introduced yesterday, due at 13:00 today
+    afternoon = MORNING + timedelta(hours=5)
+    conn.execute(
+        """
+        UPDATE french.cards SET introduced_at = %(intro)s, due = %(due)s, fsrs_state = 2, step = NULL,
+               stability = 1.0, difficulty = 5.0, last_review = %(intro)s
+        WHERE id = %(id)s
+        """,
+        {"intro": MORNING - timedelta(days=1), "due": afternoon - timedelta(minutes=5), "id": fr_nl},
+    )
+    # 08:00: fr_nl is not due yet, so the intro for nl_fr is sent (button not pressed)
+    step = session.start_batch(conn, settings, MORNING)
+    assert step.is_new and step.card.card_id == nl_fr
+    # 13:00: fr_nl is due and gets answered
+    step = session.start_batch(conn, settings, afternoon)
+    assert step.card.card_id == fr_nl and step.is_new is False
+    do_card(conn, settings, scheduler, step, "de hond", afternoon)
+    # the old nl_fr button must not introduce the sibling on the same day
+    assert session.acknowledge_intro(conn, settings, nl_fr, afternoon) is None
+    assert db.get_card(conn, nl_fr).introduced_at is None
+
+
+def test_pending_intro_button_pressed_again_is_accepted(conn, settings, add_items):
+    add_items([("le chien", "de hond")])
+    step = session.start_batch(conn, settings, MORNING)
+    assert session.acknowledge_intro(conn, settings, step.card.card_id, MORNING) is not None
+    assert session.acknowledge_intro(conn, settings, step.card.card_id, MORNING) is not None
 
 
 def test_answer_without_pending_card(conn, settings, scheduler):
@@ -186,3 +219,10 @@ def test_day_bounds_are_local(settings):
     start, end = session.day_bounds(datetime(2026, 9, 17, 23, 30, tzinfo=timezone.utc), settings.timezone)
     assert start.isoformat() == "2026-09-18T00:00:00+02:00"
     assert end - start == timedelta(days=1)
+
+
+def test_day_bounds_dst_end_is_25_hours(settings):
+    # 2026-10-25: Europe/Amsterdam goes from CEST (+02:00) back to CET (+01:00)
+    start, end = session.day_bounds(datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc), settings.timezone)
+    assert end.astimezone(timezone.utc) - start.astimezone(timezone.utc) == timedelta(hours=25)
+    assert start.utcoffset() != end.utcoffset()

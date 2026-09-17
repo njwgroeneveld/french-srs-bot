@@ -108,6 +108,22 @@ def test_save_review_logs_and_clears_pending(conn, add_items):
     assert (stats.total, stats.new, stats.reviews) == (1, 1, 0)
 
 
+def test_save_review_keeps_other_pending_card(conn, add_items):
+    (first, second) = add_items([("le chien", "de hond"), ("le chat", "de kat")])
+    card_a = card_ids(conn, first)["fr_nl"]
+    card_b = card_ids(conn, second)["fr_nl"]
+    db.introduce_card(conn, card_a, NOW)
+    db.introduce_card(conn, card_b, NOW)
+    db.set_pending(conn, card_a, NOW)
+    db.set_batch_remaining(conn, 4)
+    state = SrsState(fsrs_state=1, step=1, stability=2.3, difficulty=2.1,
+                     due=NOW + timedelta(hours=4), last_review=NOW)
+    db.save_review(conn, card_id=card_b, answer="de kat", grade="correct", rating=3,
+                   due_before=None, new_state=state, now=NOW)
+    assert db.get_bot_state(conn).pending_card_id == card_a
+    assert db.get_bot_state(conn).batch_remaining == 4
+
+
 def test_daily_totals_uses_local_dates(conn, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     fr_nl = card_ids(conn, item_id)["fr_nl"]

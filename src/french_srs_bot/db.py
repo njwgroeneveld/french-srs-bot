@@ -19,7 +19,11 @@ def connect(url: str) -> psycopg.Connection:
 
 
 def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -> list[str]:
-    """Apply all not yet applied *.sql files in filename order. Returns the versions applied now."""
+    """Apply all not yet applied *.sql files in filename order. Returns the versions applied now.
+
+    All pending migrations run in one transaction, so migration files must not contain
+    transaction control (BEGIN/COMMIT/ROLLBACK).
+    """
     applied: list[str] = []
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(hashtext('french_srs_bot_migrations'))")
@@ -164,7 +168,7 @@ def next_new_card(conn: psycopg.Connection, *, now: datetime, day_start: datetim
                   SELECT 1 FROM french.cards s
                   WHERE s.item_id = c.item_id AND s.direction = 'fr_nl'
                     AND s.introduced_at IS NOT NULL AND s.introduced_at < %(day_start)s
-                    AND (s.due IS NULL OR s.due > %(now)s)
+                    AND (s.due IS NOT NULL AND s.due > %(now)s)
               )
           )
         ORDER BY t.position, i.position, c.direction = 'nl_fr', c.id
@@ -221,8 +225,9 @@ def save_review(
             """
             UPDATE french.bot_state
             SET pending_card_id = NULL, pending_since = NULL, batch_remaining = GREATEST(batch_remaining - 1, 0)
-            WHERE id = 1
-            """
+            WHERE id = 1 AND pending_card_id = %s
+            """,
+            (card_id,),
         )
 
 
