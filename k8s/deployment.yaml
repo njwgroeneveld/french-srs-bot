@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: french-srs-bot
+  namespace: french
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # never two bots polling the same Telegram token
+  selector:
+    matchLabels:
+      app: french-srs-bot
+  template:
+    metadata:
+      labels:
+        app: french-srs-bot
+    spec:
+      containers:
+        - name: bot
+          image: ghcr.io/njwgroeneveld/french-srs-bot:latest
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: french-srs-bot-secrets
+          resources:
+            requests:
+              cpu: 20m
+              memory: 96Mi
+            limits:
+              memory: 256Mi
