@@ -22,7 +22,9 @@ def main() -> None:
     logging.info("migrations applied: %s", applied or "none")
     app = build_application(settings, secrets)
     register_jobs(app, settings)
-    app.run_polling(allowed_updates=["message", "callback_query"])
+    # bootstrap_retries=-1: keep retrying when Telegram is unreachable at startup (flaky node Wi-Fi)
+    # instead of crashing into CrashLoopBackOff.
+    app.run_polling(allowed_updates=["message", "callback_query"], bootstrap_retries=-1)
 
 
 if __name__ == "__main__":
