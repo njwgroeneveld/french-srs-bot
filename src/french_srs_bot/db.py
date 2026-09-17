@@ -1,0 +1,276 @@
+"""All database access: connections, migrations and queries on schema `french`."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from pathlib import Path
+
+import psycopg
+from psycopg.rows import dict_row
+
+from .models import BotState, CardView, DayStats, SrsState
+
+MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
+
+
+def connect(url: str) -> psycopg.Connection:
+    # prepare_threshold=None: no server-side prepared statements, required by Supabase's transaction pooler.
+    return psycopg.connect(url, autocommit=True, row_factory=dict_row, prepare_threshold=None)
+
+
+def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -> list[str]:
+    """Apply all not yet applied *.sql files in filename order. Returns the versions applied now."""
+    applied: list[str] = []
+    with conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext('french_srs_bot_migrations'))")
+        conn.execute("CREATE SCHEMA IF NOT EXISTS french")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS french.schema_migrations ("
+            " version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+        )
+        done = {row["version"] for row in conn.execute("SELECT version FROM french.schema_migrations")}
+        for path in sorted(directory.glob("*.sql")):
+            if path.stem in done:
+                continue
+            conn.execute(path.read_text(encoding="utf-8"))
+            conn.execute("INSERT INTO french.schema_migrations (version) VALUES (%s)", (path.stem,))
+            applied.append(path.stem)
+    return applied
+
+
+# --- content -------------------------------------------------------------------------------
+
+
+def upsert_theme(
+    conn: psycopg.Connection, *, source: str, source_ref: str, level: str | None, name: str, position: int
+) -> int:
+    row = conn.execute(
+        """
+        INSERT INTO french.themes (source, source_ref, level, name, position)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (source, source_ref)
+        DO UPDATE SET level = EXCLUDED.level, name = EXCLUDED.name, position = EXCLUDED.position
+        RETURNING id
+        """,
+        (source, source_ref, level, name, position),
+    ).fetchone()
+    return row["id"]
+
+
+def upsert_item(
+    conn: psycopg.Connection,
+    *,
+    theme_id: int,
+    position: int,
+    french: list[str],
+    dutch: list[str],
+    english: str | None,
+    gender: str | None,
+    hint: str | None,
+) -> int:
+    """Insert or update an item and make sure both of its cards exist. Card progress is never touched."""
+    with conn.transaction():
+        row = conn.execute(
+            """
+            INSERT INTO french.items (theme_id, position, french, dutch, english, gender, hint)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (theme_id, (french[1]))
+            DO UPDATE SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
+                          english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint
+            RETURNING id
+            """,
+            (theme_id, position, french, dutch, english, gender, hint),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO french.cards (item_id, direction) VALUES (%s, 'fr_nl'), (%s, 'nl_fr')
+            ON CONFLICT (item_id, direction) DO NOTHING
+            """,
+            (row["id"], row["id"]),
+        )
+    return row["id"]
+
+
+# --- cards ---------------------------------------------------------------------------------
+
+_CARD_SELECT = """
+    SELECT c.id AS card_id, c.item_id, c.direction, c.introduced_at, c.due, c.fsrs_state, c.step,
+           c.stability, c.difficulty, c.last_review, i.french, i.dutch, i.gender, i.hint
+    FROM french.cards c
+    JOIN french.items i ON i.id = c.item_id
+    JOIN french.themes t ON t.id = i.theme_id
+"""
+
+# The other direction of the same item was already reviewed today -> skip this card today.
+_SIBLING_NOT_REVIEWED_TODAY = """
+    NOT EXISTS (
+        SELECT 1 FROM french.cards s JOIN french.reviews r ON r.card_id = s.id
+        WHERE s.item_id = c.item_id AND s.id <> c.id AND r.reviewed_at >= %(day_start)s
+    )
+"""
+
+
+def _card_from_row(row: dict) -> CardView:
+    srs = None
+    if row["fsrs_state"] is not None:
+        srs = SrsState(
+            fsrs_state=row["fsrs_state"],
+            step=row["step"],
+            stability=row["stability"],
+            difficulty=row["difficulty"],
+            due=row["due"],
+            last_review=row["last_review"],
+        )
+    return CardView(
+        card_id=row["card_id"],
+        item_id=row["item_id"],
+        direction=row["direction"],
+        french=list(row["french"]),
+        dutch=list(row["dutch"]),
+        gender=row["gender"],
+        hint=row["hint"],
+        introduced_at=row["introduced_at"],
+        srs=srs,
+    )
+
+
+def get_card(conn: psycopg.Connection, card_id: int) -> CardView | None:
+    row = conn.execute(_CARD_SELECT + " WHERE c.id = %(card_id)s", {"card_id": card_id}).fetchone()
+    return _card_from_row(row) if row else None
+
+
+def due_cards(conn: psycopg.Connection, *, now: datetime, day_start: datetime) -> list[CardView]:
+    rows = conn.execute(
+        _CARD_SELECT
+        + " WHERE c.introduced_at IS NOT NULL AND c.due <= %(now)s AND "
+        + _SIBLING_NOT_REVIEWED_TODAY
+        + " ORDER BY c.due, c.id",
+        {"now": now, "day_start": day_start},
+    ).fetchall()
+    return [_card_from_row(row) for row in rows]
+
+
+def next_new_card(conn: psycopg.Connection, *, now: datetime, day_start: datetime) -> CardView | None:
+    row = conn.execute(
+        _CARD_SELECT
+        + """
+        WHERE c.introduced_at IS NULL
+          AND """
+        + _SIBLING_NOT_REVIEWED_TODAY
+        + """
+          AND (
+              c.direction = 'fr_nl'
+              OR EXISTS (
+                  SELECT 1 FROM french.cards s
+                  WHERE s.item_id = c.item_id AND s.direction = 'fr_nl'
+                    AND s.introduced_at IS NOT NULL AND s.introduced_at < %(day_start)s
+                    AND (s.due IS NULL OR s.due > %(now)s)
+              )
+          )
+        ORDER BY t.position, i.position, c.direction = 'nl_fr', c.id
+        LIMIT 1
+        """,
+        {"now": now, "day_start": day_start},
+    ).fetchone()
+    return _card_from_row(row) if row else None
+
+
+def introduce_card(conn: psycopg.Connection, card_id: int, now: datetime) -> None:
+    conn.execute(
+        "UPDATE french.cards SET introduced_at = %s WHERE id = %s AND introduced_at IS NULL", (now, card_id)
+    )
+
+
+def save_review(
+    conn: psycopg.Connection,
+    *,
+    card_id: int,
+    answer: str,
+    grade: str,
+    rating: int,
+    due_before: datetime | None,
+    new_state: SrsState,
+    now: datetime,
+) -> None:
+    """Store the new schedule, log the review and clear the pending card, atomically."""
+    with conn.transaction():
+        conn.execute(
+            """
+            UPDATE french.cards
+            SET due = %s, fsrs_state = %s, step = %s, stability = %s, difficulty = %s, last_review = %s
+            WHERE id = %s
+            """,
+            (
+                new_state.due,
+                new_state.fsrs_state,
+                new_state.step,
+                new_state.stability,
+                new_state.difficulty,
+                new_state.last_review,
+                card_id,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO french.reviews (card_id, reviewed_at, answer, grade, rating, due_before, due_after)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (card_id, now, answer, grade, rating, due_before, new_state.due),
+        )
+        conn.execute(
+            """
+            UPDATE french.bot_state
+            SET pending_card_id = NULL, pending_since = NULL, batch_remaining = GREATEST(batch_remaining - 1, 0)
+            WHERE id = 1
+            """
+        )
+
+
+# --- statistics ----------------------------------------------------------------------------
+
+
+def day_stats(conn: psycopg.Connection, *, day_start: datetime, day_end: datetime) -> DayStats:
+    row = conn.execute(
+        """
+        SELECT
+            (SELECT count(*) FROM french.reviews
+             WHERE reviewed_at >= %(start)s AND reviewed_at < %(end)s) AS total,
+            (SELECT count(*) FROM french.cards
+             WHERE introduced_at >= %(start)s AND introduced_at < %(end)s) AS new,
+            (SELECT count(*) FROM french.reviews r JOIN french.cards c ON c.id = r.card_id
+             WHERE r.reviewed_at >= %(start)s AND r.reviewed_at < %(end)s
+               AND c.introduced_at < %(start)s) AS reviews
+        """,
+        {"start": day_start, "end": day_end},
+    ).fetchone()
+    return DayStats(total=row["total"], new=row["new"], reviews=row["reviews"])
+
+
+def daily_totals(conn: psycopg.Connection, *, timezone_name: str, since: datetime) -> dict[date, int]:
+    rows = conn.execute(
+        """
+        SELECT (reviewed_at AT TIME ZONE %(tz)s)::date AS day, count(*) AS total
+        FROM french.reviews WHERE reviewed_at >= %(since)s
+        GROUP BY 1
+        """,
+        {"tz": timezone_name, "since": since},
+    ).fetchall()
+    return {row["day"]: row["total"] for row in rows}
+
+
+# --- bot state -----------------------------------------------------------------------------
+
+
+def get_bot_state(conn: psycopg.Connection) -> BotState:
+    row = conn.execute("SELECT pending_card_id, batch_remaining FROM french.bot_state WHERE id = 1").fetchone()
+    return BotState(pending_card_id=row["pending_card_id"], batch_remaining=row["batch_remaining"])
+
+
+def set_pending(conn: psycopg.Connection, card_id: int, now: datetime) -> None:
+    conn.execute(
+        "UPDATE french.bot_state SET pending_card_id = %s, pending_since = %s WHERE id = 1", (card_id, now)
+    )
+
+
+def set_batch_remaining(conn: psycopg.Connection, remaining: int) -> None:
+    conn.execute("UPDATE french.bot_state SET batch_remaining = %s WHERE id = 1", (remaining,))
