@@ -15,7 +15,19 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 
 def connect(url: str) -> psycopg.Connection:
     # prepare_threshold=None: no server-side prepared statements, required by Supabase's transaction pooler.
-    return psycopg.connect(url, autocommit=True, row_factory=dict_row, prepare_threshold=None)
+    # Timeouts/keepalives so a dead network fails fast instead of hanging a handler. No statement_timeout:
+    # the transaction pooler rejects the `options` startup parameter and does not keep session SETs.
+    return psycopg.connect(
+        url,
+        autocommit=True,
+        row_factory=dict_row,
+        prepare_threshold=None,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+    )
 
 
 def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -> list[str]:
@@ -146,9 +158,9 @@ def get_card(conn: psycopg.Connection, card_id: int) -> CardView | None:
 def due_cards(conn: psycopg.Connection, *, now: datetime, day_start: datetime) -> list[CardView]:
     rows = conn.execute(
         _CARD_SELECT
-        + " WHERE c.introduced_at IS NOT NULL AND c.due <= %(now)s AND "
+        + " WHERE c.introduced_at IS NOT NULL AND COALESCE(c.due, c.introduced_at) <= %(now)s AND "
         + _SIBLING_NOT_REVIEWED_TODAY
-        + " ORDER BY c.due, c.id",
+        + " ORDER BY COALESCE(c.due, c.introduced_at), c.id",
         {"now": now, "day_start": day_start},
     ).fetchall()
     return [_card_from_row(row) for row in rows]
@@ -275,6 +287,16 @@ def set_pending(conn: psycopg.Connection, card_id: int, now: datetime) -> None:
     conn.execute(
         "UPDATE french.bot_state SET pending_card_id = %s, pending_since = %s WHERE id = 1", (card_id, now)
     )
+
+
+def set_pending_if_none(conn: psycopg.Connection, card_id: int, now: datetime) -> bool:
+    """Make `card_id` pending only when no card is pending. Returns whether it was set."""
+    cursor = conn.execute(
+        "UPDATE french.bot_state SET pending_card_id = %s, pending_since = %s"
+        " WHERE id = 1 AND pending_card_id IS NULL",
+        (card_id, now),
+    )
+    return cursor.rowcount == 1
 
 
 def set_batch_remaining(conn: psycopg.Connection, remaining: int) -> None:

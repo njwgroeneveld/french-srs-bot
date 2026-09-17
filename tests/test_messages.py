@@ -36,10 +36,16 @@ def test_feedback_per_reason():
 
 
 def test_summary_variants():
-    assert "Dagdoel gehaald" in messages.summary(10, 10, 0, 3)
-    assert "Streak: 3 dagen" in messages.summary(10, 10, 0, 3)
-    assert "nog 5 herhalingen" in messages.summary(4, 10, 5, 0)
-    assert "niets meer" in messages.summary(4, 10, 0, 0)
+    assert "Dagdoel gehaald" in messages.summary(10, 10, 0, 3, more_available=False)
+    assert "Streak: 3 dagen" in messages.summary(10, 10, 0, 3, more_available=False)
+    assert "nog 5 herhalingen" in messages.summary(4, 10, 5, 0, more_available=True)
+    assert "niets meer" in messages.summary(4, 10, 0, 0, more_available=False)
+
+
+def test_summary_offers_more_when_a_new_card_is_still_available():
+    text = messages.summary(4, 10, 0, 0, more_available=True)
+    assert "niets meer" not in text
+    assert "Zin in meer? /practice" in text
 
 
 def test_reminder():

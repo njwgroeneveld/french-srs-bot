@@ -90,6 +90,23 @@ def test_due_cards_skips_card_whose_sibling_was_reviewed_today(conn, add_items):
     assert db.due_cards(conn, now=NOW, day_start=DAY_START) == []
 
 
+def test_due_cards_includes_introduced_card_without_due(conn, add_items):
+    (item_id,) = add_items([("le chien", "de hond")])
+    fr_nl = card_ids(conn, item_id)["fr_nl"]
+    db.introduce_card(conn, fr_nl, NOW - timedelta(hours=1))
+    assert [c.card_id for c in db.due_cards(conn, now=NOW, day_start=DAY_START)] == [fr_nl]
+
+
+def test_set_pending_if_none(conn, add_items):
+    first, second = add_items([("le chien", "de hond"), ("le chat", "de kat")])
+    card_a = card_ids(conn, first)["fr_nl"]
+    card_b = card_ids(conn, second)["fr_nl"]
+    assert db.set_pending_if_none(conn, card_a, NOW) is True
+    assert db.set_pending_if_none(conn, card_b, NOW) is False
+    assert db.set_pending_if_none(conn, card_a, NOW) is False
+    assert db.get_bot_state(conn).pending_card_id == card_a
+
+
 def test_save_review_logs_and_clears_pending(conn, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     fr_nl = card_ids(conn, item_id)["fr_nl"]

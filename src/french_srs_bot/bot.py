@@ -51,13 +51,19 @@ async def send_step(
 ) -> None:
     """Send the next thing to the user: an intro, a question, or a summary."""
     if isinstance(step, session.Summary):
-        await send(bot, chat_id, messages.summary(step.done_today, step.goal, step.due_now, step.streak))
+        text = messages.summary(
+            step.done_today, step.goal, step.due_now, step.streak, more_available=step.more_available
+        )
+        await send(bot, chat_id, text)
         return
     if step.is_new:
         button = InlineKeyboardButton(messages.BUTTON_UNDERSTOOD, callback_data=f"intro:{step.card.card_id}")
         await send(bot, chat_id, messages.intro(step.card), InlineKeyboardMarkup([[button]]))
         return
-    session.mark_asked(conn, step.card, now)
+    if not session.mark_asked(conn, step.card, now):
+        # Another card became pending meanwhile (e.g. a scheduled batch): that question stays open.
+        log.info("not asking card %s: another card is pending", step.card.card_id)
+        return
     await send(bot, chat_id, messages.prompt(step.card))
 
 
@@ -80,8 +86,8 @@ async def on_practice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def on_intro_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     deps = deps_of(context)
     query = update.callback_query
-    await query.answer()
     if update.effective_user is None or update.effective_user.id != deps.secrets.telegram_user_id:
+        await query.answer()
         return
     card_id = int(query.data.split(":", 1)[1])
     now = utcnow()
@@ -90,11 +96,14 @@ async def on_intro_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             card = session.acknowledge_intro(conn, deps.settings, card_id, now)
     except psycopg.Error:
         log.exception("database unavailable on intro button")
+        await query.answer()
         await send(context.bot, update.effective_chat.id, messages.database_unavailable())
         return
     if card is None:
-        return
-    await send(context.bot, update.effective_chat.id, messages.prompt(card))
+        await query.answer(messages.stale_intro())
+    else:
+        await query.answer()
+        await send(context.bot, update.effective_chat.id, messages.prompt(card))
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except TelegramError:

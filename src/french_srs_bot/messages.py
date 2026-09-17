@@ -60,7 +60,7 @@ def feedback(result: GradeResult, card: CardView) -> str:
     return f"❌ Helaas. Het juiste antwoord:\n{_answer_line(card)}"
 
 
-def summary(done_today: int, goal: int, due_now: int, streak: int) -> str:
+def summary(done_today: int, goal: int, due_now: int, streak: int, *, more_available: bool) -> str:
     if done_today >= goal:
         text = f"🎯 <b>Dagdoel gehaald!</b> {done_today}/{goal} kaarten vandaag."
         if streak:
@@ -69,6 +69,8 @@ def summary(done_today: int, goal: int, due_now: int, streak: int) -> str:
         text = f"🏁 <b>Setje klaar.</b> Vandaag {done_today}/{goal} kaarten."
     if due_now:
         text += f"\n📚 Er staan nog {due_now} herhalingen klaar: /practice"
+    elif done_today < goal and more_available:
+        text += "\nZin in meer? /practice"
     elif done_today < goal:
         text += "\nVoor nu is er niets meer te oefenen. Tot het volgende setje!"
     return text
@@ -79,6 +81,10 @@ def reminder(stats: DayStats, goal: int) -> str:
         f"⏰ Je zit vandaag op {stats.total}/{goal} kaarten.\n"
         "Nog even oefenen voor je streak? /practice"
     )
+
+
+def stale_intro() -> str:
+    return "Dit woord is nu niet aan de beurt"
 
 
 def no_pending_card() -> str:

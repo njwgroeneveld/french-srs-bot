@@ -27,6 +27,7 @@ class Summary:
     goal: int
     due_now: int
     streak: int
+    more_available: bool  # a due review or an allowed new card exists right now
 
 
 @dataclass(frozen=True)
@@ -84,13 +85,14 @@ def pick_next(conn: psycopg.Connection, settings: Settings, now: datetime, *, fi
 def summary(conn: psycopg.Connection, settings: Settings, now: datetime) -> Summary:
     start, end = day_bounds(now, settings.timezone)
     stats = db.day_stats(conn, day_start=start, day_end=end)
-    due = db.due_cards(conn, now=now, day_start=start)
+    due, new_card = _eligible_now(conn, settings, now)
     totals = db.daily_totals(conn, timezone_name=settings.timezone.key, since=start - timedelta(days=366))
     return Summary(
         done_today=stats.total,
         goal=settings.daily_goal,
         due_now=len(due),
         streak=compute_streak(totals, start.date(), settings.daily_goal),
+        more_available=bool(due) or new_card is not None,
     )
 
 
@@ -104,8 +106,11 @@ def start_batch(conn: psycopg.Connection, settings: Settings, now: datetime) -> 
     return pick_next(conn, settings, now, first_of_batch=True) or summary(conn, settings, now)
 
 
-def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime) -> None:
-    db.set_pending(conn, card.card_id, now)
+def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime) -> bool:
+    """Make `card` the pending card. False when another card became pending meanwhile (don't ask it)."""
+    if db.set_pending_if_none(conn, card.card_id, now):
+        return True
+    return db.get_bot_state(conn).pending_card_id == card.card_id
 
 
 def acknowledge_intro(

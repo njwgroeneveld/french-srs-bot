@@ -38,13 +38,35 @@ def do_card(conn, settings, scheduler, step, text, now):
     if step.is_new:
         assert session.acknowledge_intro(conn, settings, step.card.card_id, now) is not None
     else:
-        session.mark_asked(conn, step.card, now)
+        assert session.mark_asked(conn, step.card, now)
     return session.answer(conn, settings, scheduler, text, now)
 
 
 def test_empty_database_gives_summary(conn, settings):
     step = session.start_batch(conn, settings, MORNING)
-    assert step == session.Summary(done_today=0, goal=10, due_now=0, streak=0)
+    assert step == session.Summary(done_today=0, goal=10, due_now=0, streak=0, more_available=False)
+
+
+def test_summary_after_full_batch_reports_more_new_cards(conn, settings, scheduler, add_items):
+    add_items([(f"mot{i}", f"woord{i}") for i in range(10)])
+    step = session.start_batch(conn, settings, MORNING)
+    while isinstance(step, session.Ask):
+        step = do_card(conn, settings, scheduler, step, "x", MORNING).next
+    assert step.due_now == 0
+    assert step.more_available is True
+
+
+def test_mark_asked_does_not_replace_another_pending_card(conn, settings, add_items):
+    first, second = add_items([("le chien", "de hond"), ("le chat", "de kat")])
+    make_review_due(conn, second, "fr_nl", due=MORNING - timedelta(hours=1))
+    step = session.start_batch(conn, settings, MORNING)
+    assert step.is_new and step.card.item_id == first
+    session.acknowledge_intro(conn, settings, step.card.card_id, MORNING)
+    review = db.get_card(conn, card_id(conn, second, "fr_nl"))
+    assert session.mark_asked(conn, review, MORNING) is False
+    assert db.get_bot_state(conn).pending_card_id == step.card.card_id
+    # re-asking the pending card itself still works
+    assert session.mark_asked(conn, step.card, MORNING) is True
 
 
 def test_batch_starts_with_new_card_then_reviews(conn, settings, scheduler, add_items):

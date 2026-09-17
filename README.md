@@ -41,10 +41,18 @@ Imported word lists stay in `data/`, which is git-ignored: they come from a thir
 for personal use only. `examples/example-theme.yaml` shows the format.
 Changing an item's first French answer creates a new item; `load` reports the old one as stale
 ("warning: in database but not in file") and it must be removed manually.
+Deleting an item also deletes its cards and their review history, which lowers past daily totals
+and can break your streak.
 
 ## Deployment
 
 Pushing to `main` runs the tests and publishes `ghcr.io/<owner>/french-srs-bot` (amd64 + arm64).
+
+1. Copy `k8s/secret.example.env` to `french-srs-bot.secret.env` (git-ignored) and fill it in.
+2. After the first CI run, make the GHCR package public once: GitHub → Packages → french-srs-bot →
+   Package settings → Change visibility. Otherwise the cluster cannot pull the image.
+3. The image name in `k8s/deployment.yaml` must match your GitHub owner, in lowercase
+   (`ghcr.io/<owner>/french-srs-bot`).
 
 ```bash
 kubectl apply -f k8s/namespace.yaml

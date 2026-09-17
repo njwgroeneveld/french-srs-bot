@@ -37,7 +37,10 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
 
 def cmd_load(args: argparse.Namespace) -> None:
-    with db.connect(os.environ["DATABASE_URL"]) as conn:
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        sys.exit("DATABASE_URL is not set: put it in the environment or in a local .env file")
+    with db.connect(database_url) as conn:
         db.run_migrations(conn)
         for path in args.files:
             result = load_theme(conn, read_theme_file(Path(path)))
