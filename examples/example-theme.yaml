@@ -1,0 +1,28 @@
+# Example of a reviewed theme file (self-written sample words).
+# Real imports go to data/<level>/, which is git-ignored.
+source: example
+source_ref: example/greetings
+level: A0
+name: Greetings
+position: 1
+items:
+  - french: [bonjour]
+    dutch: [hallo, goedendag]
+    english: hello
+    gender: null
+    hint: null
+  - french: [merci]
+    dutch: [dank je, dank u]
+    english: thank you
+    gender: null
+    hint: null
+  - french: [l'ami]
+    dutch: [de vriend]
+    english: the friend (male)
+    gender: m
+    hint: null
+  - french: [l'amie]
+    dutch: [de vriendin]
+    english: the friend (female)
+    gender: f
+    hint: null
