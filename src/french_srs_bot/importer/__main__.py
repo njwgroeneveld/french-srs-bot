@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import anthropic
@@ -23,12 +24,14 @@ from .theme_file import load_theme, read_theme_file, write_theme_file
 
 def cmd_fetch(args: argparse.Namespace) -> None:
     source_ref = source_ref_from_url(args.url)
+    target = Path(args.out) / args.level / f"{source_ref.replace('/', '-')}.yaml"
+    if target.exists() and not args.force:
+        sys.exit(f"{target} already exists and may contain your review; use --force to overwrite it")
     parsed = parse_theme(fetch_html(args.url))
     suggestions = request_suggestions(anthropic.Anthropic(), parsed)
     theme = build_theme_file(
         parsed, suggestions, source_ref=source_ref, level=args.level, position=args.position
     )
-    target = Path(args.out) / args.level / f"{source_ref.replace('/', '-')}.yaml"
     write_theme_file(target, theme)
     print(f"wrote {target} ({len(theme.items)} items) - review it, then run: load {target}")
 
@@ -37,8 +40,10 @@ def cmd_load(args: argparse.Namespace) -> None:
     with db.connect(os.environ["DATABASE_URL"]) as conn:
         db.run_migrations(conn)
         for path in args.files:
-            count = load_theme(conn, read_theme_file(Path(path)))
-            print(f"loaded {path}: {count} items")
+            result = load_theme(conn, read_theme_file(Path(path)))
+            print(f"loaded {path}: {result.loaded} items")
+            if result.stale:
+                print(f"warning: in database but not in file: {', '.join(result.stale)}")
 
 
 def main() -> None:
@@ -51,6 +56,7 @@ def main() -> None:
     fetch.add_argument("--level", required=True)
     fetch.add_argument("--position", type=int, required=True, help="order in which themes are introduced")
     fetch.add_argument("--out", default="data")
+    fetch.add_argument("--force", action="store_true", help="overwrite an existing (reviewed) YAML file")
     fetch.set_defaults(func=cmd_fetch)
 
     load = commands.add_parser("load", help="load reviewed YAML files into the database")

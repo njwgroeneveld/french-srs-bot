@@ -39,6 +39,8 @@ python -m french_srs_bot.importer load data/A0/theme-128.yaml
 `fetch` needs `ANTHROPIC_API_KEY` (Claude suggests Dutch translations), `load` needs `DATABASE_URL`.
 Imported word lists stay in `data/`, which is git-ignored: they come from a third-party site and are
 for personal use only. `examples/example-theme.yaml` shows the format.
+Changing an item's first French answer creates a new item; `load` reports the old one as stale
+("warning: in database but not in file") and it must be removed manually.
 
 ## Deployment
 

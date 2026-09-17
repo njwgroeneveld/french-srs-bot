@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import psycopg
 from fsrs import Scheduler
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -61,7 +62,7 @@ async def send_step(
 
 
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send(context.bot, update.effective_chat.id, messages.welcome())
+    await send(context.bot, update.effective_chat.id, messages.welcome(deps_of(context).settings.batch_times))
 
 
 async def on_practice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -71,7 +72,7 @@ async def on_practice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         with db.connect(deps.secrets.database_url) as conn:
             await send_step(context.bot, chat_id, conn, session.start_batch(conn, deps.settings, now), now)
-    except psycopg.OperationalError:
+    except psycopg.Error:
         log.exception("database unavailable in /practice")
         await send(context.bot, chat_id, messages.database_unavailable())
 
@@ -87,14 +88,17 @@ async def on_intro_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         with db.connect(deps.secrets.database_url) as conn:
             card = session.acknowledge_intro(conn, deps.settings, card_id, now)
-    except psycopg.OperationalError:
+    except psycopg.Error:
         log.exception("database unavailable on intro button")
         await send(context.bot, update.effective_chat.id, messages.database_unavailable())
         return
     if card is None:
         return
-    await query.edit_message_reply_markup(reply_markup=None)
     await send(context.bot, update.effective_chat.id, messages.prompt(card))
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        log.warning("could not remove the intro button", exc_info=True)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -109,7 +113,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             await send(context.bot, chat_id, messages.feedback(answered.result, answered.card))
             await send_step(context.bot, chat_id, conn, answered.next, now)
-    except psycopg.OperationalError:
+    except psycopg.Error:
         log.exception("database unavailable while answering")
         await send(context.bot, chat_id, messages.database_unavailable())
 
@@ -125,7 +129,8 @@ def build_application(settings: Settings, secrets: Secrets) -> Application:
         secrets=secrets,
         scheduler=build_scheduler(settings.learning_steps, settings.relearning_steps),
     )
-    only_me = filters.User(user_id=secrets.telegram_user_id)
+    # UpdateType.MESSAGE: ignore edited messages, an edit must not count as a new answer or command.
+    only_me = filters.User(user_id=secrets.telegram_user_id) & filters.UpdateType.MESSAGE
     app.add_handler(CommandHandler("start", on_start, filters=only_me))
     app.add_handler(CommandHandler("practice", on_practice, filters=only_me))
     app.add_handler(CallbackQueryHandler(on_intro_pressed, pattern=r"^intro:\d+$"))

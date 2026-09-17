@@ -23,7 +23,7 @@ async def batch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             step = session.scheduled_batch(conn, deps.settings, now)
             if step is not None:
                 await send_step(context.bot, chat_id, conn, step, now)
-    except psycopg.OperationalError:
+    except psycopg.Error:
         log.exception("database unavailable in scheduled batch")
 
 
@@ -32,7 +32,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         with db.connect(deps.secrets.database_url) as conn:
             stats = session.reminder_needed(conn, deps.settings, utcnow())
-    except psycopg.OperationalError:
+    except psycopg.Error:
         log.exception("database unavailable in reminder")
         return
     if stats is not None:

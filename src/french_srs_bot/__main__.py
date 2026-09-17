@@ -6,8 +6,6 @@ import logging
 import os
 from pathlib import Path
 
-from telegram import Update
-
 from . import db
 from .bot import build_application
 from .config import load_secrets, load_settings
@@ -24,7 +22,7 @@ def main() -> None:
     logging.info("migrations applied: %s", applied or "none")
     app = build_application(settings, secrets)
     register_jobs(app, settings)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=["message", "callback_query"])
 
 
 if __name__ == "__main__":

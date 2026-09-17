@@ -1,3 +1,5 @@
+from datetime import time
+
 from french_srs_bot import messages
 from french_srs_bot.grading import Grade, GradeResult
 from french_srs_bot.models import CardView, DayStats
@@ -47,3 +49,8 @@ def test_reminder():
 def test_user_text_is_escaped():
     card = CardView(1, 1, "fr_nl", ["<b>x</b>"], ["y"], None, None, None, None)
     assert "<b>x</b>" not in messages.prompt(card)
+
+
+def test_welcome_lists_configured_batch_times():
+    assert "07:30, 12:00 en 18:15" in messages.welcome([time(7, 30), time(12), time(18, 15)])
+    assert "om 09:00." in messages.welcome([time(9)])

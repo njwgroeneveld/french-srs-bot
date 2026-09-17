@@ -6,8 +6,10 @@ import json
 from typing import Literal
 
 import anthropic
+import pydantic
 from pydantic import BaseModel
 
+from ..grading import normalize
 from .kwiziq import ParsedTheme
 from .theme_file import ThemeFile, ThemeItem
 
@@ -41,16 +43,20 @@ def request_suggestions(client: anthropic.Anthropic, theme: ParsedTheme) -> list
         {"theme": theme.name, "entries": [{"french": e.french, "english": e.english} for e in theme.entries]},
         ensure_ascii=False,
     )
-    response = client.beta.messages.parse(
-        model=MODEL,
-        max_tokens=16000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": payload}],
-        output_format=Suggestions,
-    )
-    if response.stop_reason == "refusal" or response.parsed_output is None:
+    try:
+        response = client.beta.messages.parse(
+            model=MODEL,
+            max_tokens=16000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": payload}],
+            output_format=Suggestions,
+        )
+    except pydantic.ValidationError as exc:
+        # Raised while parsing when the output was truncated or a refusal contains text.
+        raise RuntimeError(f"Claude returned no usable suggestions: {exc}") from exc
+    if response.stop_reason in ("refusal", "max_tokens") or response.parsed_output is None:
         raise RuntimeError(f"Claude returned no suggestions (stop_reason={response.stop_reason})")
     return response.parsed_output.items
 
@@ -63,7 +69,10 @@ def build_theme_file(
     level: str,
     position: int,
 ) -> ThemeFile:
-    if [s.french for s in suggestions] != [e.french for e in theme.entries]:
+    # Claude may change apostrophes or whitespace; the French text is always taken from the parsed entry.
+    if len(suggestions) != len(theme.entries) or any(
+        normalize(s.french) != normalize(e.french) for s, e in zip(suggestions, theme.entries)
+    ):
         raise ValueError("suggestions do not match the parsed entries one-to-one")
     items = [
         ThemeItem(

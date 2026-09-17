@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from datetime import time
 from html import escape
 
 from .grading import GradeResult
@@ -21,10 +23,15 @@ def _answer_line(card: CardView) -> str:
     return f"<b>{escape(card.french[0])}</b>{_gender_note(card)} = <b>{escape(card.dutch[0])}</b>"
 
 
-def welcome() -> str:
+def _join_times(moments: Sequence[time]) -> str:
+    labels = [f"{moment:%H:%M}" for moment in moments]
+    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} en {labels[-1]}"
+
+
+def welcome(batch_times: Sequence[time]) -> str:
     return (
         "👋 <b>Bonjour !</b>\n\n"
-        "Ik overhoor je elke dag Franse woordjes, in setjes om 08:00, 13:00 en 19:00.\n"
+        f"Ik overhoor je elke dag Franse woordjes, in setjes om {_join_times(batch_times)}.\n"
         "Typ het antwoord gewoon als bericht. Wil je tussendoor oefenen? Stuur /practice."
     )
 

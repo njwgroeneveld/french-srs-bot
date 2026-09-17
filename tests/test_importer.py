@@ -1,10 +1,14 @@
+import argparse
 from pathlib import Path
+from types import SimpleNamespace
 
+import pydantic
 import pytest
 
 from french_srs_bot import db
+from french_srs_bot.importer import __main__ as importer_cli
 from french_srs_bot.importer.kwiziq import Entry, ParsedTheme, parse_theme, source_ref_from_url
-from french_srs_bot.importer.suggest import Suggestion, build_theme_file
+from french_srs_bot.importer.suggest import Suggestion, Suggestions, build_theme_file, request_suggestions
 from french_srs_bot.importer.theme_file import load_theme, read_theme_file, write_theme_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -84,10 +88,113 @@ def test_read_theme_file_validates_gender(tmp_path):
 
 def test_load_theme_twice_keeps_progress(conn):
     theme = read_theme_file(REPO_ROOT / "examples" / "example-theme.yaml")
-    assert load_theme(conn, theme) == len(theme.items)
+    assert load_theme(conn, theme).loaded == len(theme.items)
     conn.execute("UPDATE french.cards SET introduced_at = now(), due = now(), fsrs_state = 2")
     theme.items[0].dutch.append("extra")
     load_theme(conn, theme)
     assert conn.execute("SELECT count(*) AS n FROM french.cards WHERE fsrs_state = 2").fetchone()["n"] == 2 * len(theme.items)
     first = db.get_card(conn, conn.execute("SELECT min(id) AS id FROM french.cards").fetchone()["id"])
     assert "extra" in first.dutch
+
+
+def _fake_client(parse):
+    return SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(parse=parse)))
+
+
+PARSED = ParsedTheme("Kitchen", [Entry("cuisinier", "cook")])
+
+
+def test_request_suggestions_wraps_validation_error():
+    try:
+        Suggestions.model_validate({})
+    except pydantic.ValidationError as exc:
+        error = exc
+
+    def parse(**kwargs):
+        raise error
+
+    with pytest.raises(RuntimeError, match="no usable suggestions") as info:
+        request_suggestions(_fake_client(parse), PARSED)
+    assert info.value.__cause__ is error
+
+
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+def test_request_suggestions_rejects_refusal_and_truncation(stop_reason):
+    output = Suggestions(items=[]) if stop_reason == "max_tokens" else None
+    response = SimpleNamespace(stop_reason=stop_reason, parsed_output=output)
+    with pytest.raises(RuntimeError, match=stop_reason):
+        request_suggestions(_fake_client(lambda **kwargs: response), PARSED)
+
+
+def test_build_theme_file_tolerates_normalisation():
+    parsed = ParsedTheme("School", [Entry("l'école", "the school")])
+    suggestions = [Suggestion(french=" l’école ", dutch=["de school"], gender="f", hint="")]
+    theme = build_theme_file(parsed, suggestions, source_ref="theme/9", level="A0", position=1)
+    assert theme.items[0].french == ["l'école"]
+
+
+def test_build_theme_file_rejects_different_length():
+    parsed = ParsedTheme("Kitchen", [Entry("cuisinier", "cook")])
+    with pytest.raises(ValueError):
+        build_theme_file(parsed, [], source_ref="theme/9", level="A0", position=1)
+
+
+def _theme_yaml(tmp_path, items):
+    path = tmp_path / "theme.yaml"
+    header = "source: x\nsource_ref: t/1\nlevel: A0\nname: X\nposition: 1\nitems:\n"
+    path.write_text(header + items, encoding="utf-8")
+    return path
+
+
+def test_read_theme_file_rejects_bare_string(tmp_path):
+    path = _theme_yaml(tmp_path, "  - french: le chien\n    dutch: [de hond]\n")
+    with pytest.raises(ValueError, match=r"item 1.*french"):
+        read_theme_file(path)
+
+
+def test_read_theme_file_rejects_non_string_answer(tmp_path):
+    path = _theme_yaml(tmp_path, "  - french: [on]\n    dutch: [men]\n")
+    with pytest.raises(ValueError, match=r"item 1.*french"):
+        read_theme_file(path)
+
+
+def test_read_theme_file_rejects_non_string_english(tmp_path):
+    path = _theme_yaml(tmp_path, "  - french: [oui]\n    dutch: [ja]\n    english: yes\n")
+    with pytest.raises(ValueError, match=r"item 1.*english"):
+        read_theme_file(path)
+
+
+def test_read_theme_file_rejects_duplicate_french(tmp_path):
+    path = _theme_yaml(
+        tmp_path, "  - french: [le chien]\n    dutch: [de hond]\n  - french: [le chien]\n    dutch: [de reu]\n"
+    )
+    with pytest.raises(ValueError, match=r"theme.yaml.*item 2.*le chien"):
+        read_theme_file(path)
+
+
+def test_load_theme_reports_stale_items(conn):
+    theme = read_theme_file(REPO_ROOT / "examples" / "example-theme.yaml")
+    load_theme(conn, theme)
+    removed = theme.items.pop(0)
+    result = load_theme(conn, theme)
+    assert result.loaded == len(theme.items)
+    assert result.stale == [removed.french[0]]
+    assert conn.execute("SELECT count(*) AS n FROM french.items").fetchone()["n"] == len(theme.items) + 1
+
+
+def test_fetch_refuses_to_overwrite_existing_file(tmp_path, monkeypatch):
+    target = tmp_path / "A0" / "theme-128.yaml"
+    target.parent.mkdir()
+    target.write_text("reviewed", encoding="utf-8")
+
+    def no_network(url):
+        raise AssertionError("fetch must stop before downloading or calling Claude")
+
+    monkeypatch.setattr(importer_cli, "fetch_html", no_network)
+    args = argparse.Namespace(
+        url="https://french.kwiziq.com/learn/theme/128", level="A0", position=1, out=str(tmp_path), force=False
+    )
+    with pytest.raises(SystemExit) as info:
+        importer_cli.cmd_fetch(args)
+    assert "--force" in str(info.value.code)
+    assert target.read_text(encoding="utf-8") == "reviewed"
