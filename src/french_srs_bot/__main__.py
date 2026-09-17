@@ -15,6 +15,8 @@ from .scheduler import register_jobs
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # do not log request URLs, they contain the token
+    # Startup retries against Telegram are logged here, so a slow network is visible instead of silent.
+    logging.getLogger("telegram.ext.Updater").setLevel(logging.INFO)
     settings = load_settings(Path(os.environ.get("SETTINGS_PATH", "settings.yaml")))
     secrets = load_secrets()
     with db.connect(secrets.database_url) as conn:

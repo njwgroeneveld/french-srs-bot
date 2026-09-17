@@ -132,7 +132,19 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def build_application(settings: Settings, secrets: Secrets) -> Application:
-    app = Application.builder().token(secrets.telegram_bot_token).build()
+    # Generous timeouts: the node's Wi-Fi can be very slow (seconds of latency, packet loss).
+    # The library defaults (5s) turn such a moment into an endless retry loop at startup.
+    app = (
+        Application.builder()
+        .token(secrets.telegram_bot_token)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .get_updates_connect_timeout(30)
+        .get_updates_read_timeout(40)
+        .build()
+    )
     app.bot_data["deps"] = Deps(
         settings=settings,
         secrets=secrets,
