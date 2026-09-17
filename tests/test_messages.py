@@ -1,0 +1,49 @@
+from french_srs_bot import messages
+from french_srs_bot.grading import Grade, GradeResult
+from french_srs_bot.models import CardView, DayStats
+
+
+def make_card(direction="fr_nl", gender="f", hint=None):
+    return CardView(
+        card_id=1, item_id=1, direction=direction, french=["l'école"], dutch=["de school"],
+        gender=gender, hint=hint, introduced_at=None, srs=None,
+    )
+
+
+def test_prompt_shows_question_in_the_right_direction():
+    assert "l&#x27;école" in messages.prompt(make_card("fr_nl"))
+    assert "de school" in messages.prompt(make_card("nl_fr"))
+
+
+def test_prompt_shows_hint_only_for_nl_fr():
+    assert "vrouwelijk" in messages.prompt(make_card("nl_fr", hint="vrouwelijk"))
+    assert "vrouwelijk" not in messages.prompt(make_card("fr_nl", hint="vrouwelijk"))
+
+
+def test_intro_mentions_gender():
+    assert "(vrouwelijk)" in messages.intro(make_card())
+
+
+def test_feedback_per_reason():
+    card = make_card()
+    assert messages.feedback(GradeResult(Grade.CORRECT, "exact", "l'école"), card) == "✅ Parfait !"
+    assert "accenten" in messages.feedback(GradeResult(Grade.ALMOST, "accent", "l'école"), card)
+    assert "lidwoord" in messages.feedback(GradeResult(Grade.HARD, "article", "l'école"), card)
+    assert "typefout" in messages.feedback(GradeResult(Grade.HARD, "typo", "l'école"), card)
+    assert "juiste antwoord" in messages.feedback(GradeResult(Grade.WRONG, "wrong", "l'école"), card)
+
+
+def test_summary_variants():
+    assert "Dagdoel gehaald" in messages.summary(10, 10, 0, 3)
+    assert "Streak: 3 dagen" in messages.summary(10, 10, 0, 3)
+    assert "nog 5 herhalingen" in messages.summary(4, 10, 5, 0)
+    assert "niets meer" in messages.summary(4, 10, 0, 0)
+
+
+def test_reminder():
+    assert "3/10" in messages.reminder(DayStats(total=3, new=1, reviews=2), 10)
+
+
+def test_user_text_is_escaped():
+    card = CardView(1, 1, "fr_nl", ["<b>x</b>"], ["y"], None, None, None, None)
+    assert "<b>x</b>" not in messages.prompt(card)
