@@ -38,6 +38,12 @@ def review(
     scheduler: Scheduler, state: SrsState | None, grade: Grade, now: datetime
 ) -> tuple[SrsState, Rating]:
     """Return the new state after answering with `grade`. `state` is None for a card never reviewed."""
+    if (
+        now.tzinfo is None
+        or (state is not None and state.due.tzinfo is None)
+        or (state is not None and state.last_review is not None and state.last_review.tzinfo is None)
+    ):
+        raise ValueError("datetimes must be timezone-aware")
     now = now.astimezone(timezone.utc)
     if state is None:
         card = Card(due=now)

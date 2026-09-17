@@ -12,8 +12,13 @@ from french_srs_bot.grading import Grade, grade, levenshtein, normalize, strip_a
         ("le  chien", ["le chien"], "fr", Grade.CORRECT, "exact"),
         # curly apostrophe from a phone keyboard
         ("l’école", ["l'école"], "fr", Grade.CORRECT, "exact"),
+        # modifier letter apostrophe
+        ("lʼécole", ["l'école"], "fr", Grade.CORRECT, "exact"),
+        # decomposed accent (NFD) normalises to the same as precomposed (NFC)
+        ("l'école", ["l'école"], "fr", Grade.CORRECT, "exact"),
         # trailing punctuation is ignored
         ("de hond.", ["de hond"], "nl", Grade.CORRECT, "exact"),
+        ("de hond,", ["de hond"], "nl", Grade.CORRECT, "exact"),
         # accents
         ("l'ecole", ["l'école"], "fr", Grade.ALMOST, "accent"),
         ("oeuf", ["œuf"], "fr", Grade.ALMOST, "accent"),
@@ -61,3 +66,7 @@ def test_helpers():
     assert strip_accents("français été") == "francais ete"
     assert levenshtein("mardi", "mardie") == 1
     assert levenshtein("", "abc") == 3
+
+
+def test_grade_is_a_str_enum():
+    assert f"{Grade.CORRECT}" == "correct"

@@ -75,3 +75,8 @@ def test_accepts_non_utc_datetimes_from_the_database(scheduler):
     later = state.due.astimezone(ZoneInfo("Europe/Amsterdam"))
     new_state, _ = review(scheduler, local_state, Grade.CORRECT, later)
     assert new_state.due - later == timedelta(days=1)
+
+
+def test_rejects_naive_datetimes(scheduler):
+    with pytest.raises(ValueError):
+        review(scheduler, None, Grade.CORRECT, datetime(2026, 9, 18, 8, 0))

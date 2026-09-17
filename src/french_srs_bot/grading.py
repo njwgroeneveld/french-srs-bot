@@ -5,13 +5,13 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 Lang = Literal["fr", "nl"]
 
 
-class Grade(str, Enum):
+class Grade(StrEnum):
     CORRECT = "correct"
     ALMOST = "almost"
     HARD = "hard"
@@ -37,10 +37,18 @@ class GradeResult:
 
 
 def normalize(text: str) -> str:
-    text = text.strip().lower().replace("’", "'").replace("‘", "'")
+    text = unicodedata.normalize("NFC", text)
+    text = (
+        text.strip()
+        .lower()
+        .replace("’", "'")
+        .replace("‘", "'")
+        .replace("ʼ", "'")
+        .replace("`", "'")
+    )
     text = re.sub(r"\s+", " ", text)
     if text != "?":
-        text = text.rstrip(".!?").rstrip()
+        text = text.rstrip(".!?,;").rstrip()
     return text
 
 
