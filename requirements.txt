@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]==22.8
+psycopg[binary]==3.3.5
+fsrs==6.3.2
+PyYAML>=6.0,<7
+tzdata>=2025.1

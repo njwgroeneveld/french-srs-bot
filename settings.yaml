@@ -1,0 +1,9 @@
+timezone: Europe/Amsterdam
+daily_goal: 10          # cards per day
+daily_new: 3            # new cards per day (more only when too few reviews are due to reach the goal)
+batch_size: 4
+batch_times: ["08:00", "13:00", "19:00"]
+reminder_time: "20:30"
+learning_steps: ["4h", "4h", "1d"]   # intro quiz -> +4h -> +1d -> graduated
+relearning_steps: ["4h"]
+typo_min_length: 4      # 1-letter typo tolerance only for answers of >= 4 characters

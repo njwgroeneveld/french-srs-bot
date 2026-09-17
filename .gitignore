@@ -1,0 +1,7 @@
+# kwiziq content is copyrighted: imported themes stay local
+data/
+.env
+*.secret.env
+__pycache__/
+.pytest_cache/
+.venv/
