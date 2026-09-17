@@ -27,6 +27,7 @@ class ThemeFile:
     level: str | None
     name: str
     position: int
+    lesson: str | None = None  # e.g. the Obsidian lesson note this theme comes from
     items: list[ThemeItem] = field(default_factory=list)
 
 
@@ -48,6 +49,8 @@ def _is_answer_list(value: object) -> bool:
 
 def read_theme_file(path: Path) -> ThemeFile:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw.get("lesson"), (str, type(None))):
+        raise ValueError(f"{path}: lesson must be a string or null, got {raw['lesson']!r}")
     items = []
     seen: set[str] = set()
     for number, item in enumerate(raw["items"], start=1):
@@ -81,6 +84,7 @@ def read_theme_file(path: Path) -> ThemeFile:
         level=raw.get("level"),
         name=raw["name"],
         position=int(raw["position"]),
+        lesson=raw.get("lesson"),
         items=items,
     )
 
@@ -98,6 +102,7 @@ def load_theme(conn: psycopg.Connection, theme: ThemeFile) -> LoadResult:
             level=theme.level,
             name=theme.name,
             position=theme.position,
+            lesson=theme.lesson,
         )
         for position, item in enumerate(theme.items, start=1):
             db.upsert_item(

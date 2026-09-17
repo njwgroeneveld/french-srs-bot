@@ -28,7 +28,7 @@ def make_due(conn, card_id, *, introduced_at, due):
 def test_migrations_are_idempotent(conn):
     assert db.run_migrations(conn) == []
     versions = [r["version"] for r in conn.execute("SELECT version FROM french.schema_migrations")]
-    assert versions == ["001_initial"]
+    assert versions == ["001_initial", "002_theme_lesson"]
 
 
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, add_items):

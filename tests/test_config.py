@@ -28,8 +28,8 @@ def test_parse_clock():
 def test_load_settings_from_repo_file():
     settings = load_settings(REPO_ROOT / "settings.yaml")
     assert settings.timezone.key == "Europe/Amsterdam"
-    assert settings.daily_goal == 10
-    assert settings.daily_new == 3
+    assert settings.daily_goal == 15
+    assert settings.daily_new == 8
     assert settings.batch_times == (time(8, 0), time(13, 0), time(19, 0))
     assert settings.learning_steps == (timedelta(hours=4), timedelta(hours=4), timedelta(days=1))
 

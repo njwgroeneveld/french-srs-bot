@@ -75,6 +75,29 @@ def test_yaml_round_trip(tmp_path):
     assert read_theme_file(target) == theme
 
 
+def test_lesson_reference_round_trip_and_load(conn, tmp_path):
+    theme = read_theme_file(REPO_ROOT / "examples" / "example-theme.yaml")
+    assert theme.lesson is None
+    theme.lesson = "Frans/Lessen/2026-W38 A1.1 U4 Transport"
+    target = tmp_path / "lesson.yaml"
+    write_theme_file(target, theme)
+    assert read_theme_file(target).lesson == theme.lesson
+    load_theme(conn, theme)
+    row = conn.execute("SELECT lesson FROM french.themes WHERE source_ref = %s", (theme.source_ref,)).fetchone()
+    assert row["lesson"] == theme.lesson
+
+
+def test_read_theme_file_rejects_non_string_lesson(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "source: x\nsource_ref: t/1\nlevel: A0\nname: X\nposition: 1\nlesson: 38\n"
+        "items:\n  - french: [le chien]\n    dutch: [de hond]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="lesson"):
+        read_theme_file(bad)
+
+
 def test_read_theme_file_validates_gender(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text(

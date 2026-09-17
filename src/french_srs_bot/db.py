@@ -58,17 +58,25 @@ def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -
 
 
 def upsert_theme(
-    conn: psycopg.Connection, *, source: str, source_ref: str, level: str | None, name: str, position: int
+    conn: psycopg.Connection,
+    *,
+    source: str,
+    source_ref: str,
+    level: str | None,
+    name: str,
+    position: int,
+    lesson: str | None = None,
 ) -> int:
     row = conn.execute(
         """
-        INSERT INTO french.themes (source, source_ref, level, name, position)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO french.themes (source, source_ref, level, name, position, lesson)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT (source, source_ref)
-        DO UPDATE SET level = EXCLUDED.level, name = EXCLUDED.name, position = EXCLUDED.position
+        DO UPDATE SET level = EXCLUDED.level, name = EXCLUDED.name, position = EXCLUDED.position,
+                      lesson = EXCLUDED.lesson
         RETURNING id
         """,
-        (source, source_ref, level, name, position),
+        (source, source_ref, level, name, position, lesson),
     ).fetchone()
     return row["id"]
 

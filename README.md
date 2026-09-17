@@ -8,7 +8,7 @@ and schedules the card accordingly.
 ## How it works
 
 - Three small batches a day (08:00, 13:00, 19:00) and `/practice` whenever you like.
-- Daily goal of 10 cards: reviews first, one new word leads each batch, at most 3 new words per day
+- Daily goal of 15 cards: reviews first, one new word leads each batch, at most 8 new words per day
   unless there are too few reviews to reach the goal.
 - A new word goes through learning steps (right away → +4h → +1 day) before FSRS takes over.
 - The two directions of a word are separate cards and never come up on the same day.
@@ -39,6 +39,9 @@ python -m french_srs_bot.importer load data/A0/theme-128.yaml
 `fetch` needs `ANTHROPIC_API_KEY` (Claude suggests Dutch translations), `load` needs `DATABASE_URL`.
 Imported word lists stay in `data/`, which is git-ignored: they come from a third-party site and are
 for personal use only. `examples/example-theme.yaml` shows the format.
+A theme file can also be written by hand (e.g. from your own lesson notes) and may set an optional
+`lesson:` reference, stored in `themes.lesson`. New words come theme by theme in `position` order,
+so give lesson themes a lower `position` than general word lists to learn them first.
 Changing an item's first French answer creates a new item; `load` reports the old one as stale
 ("warning: in database but not in file") and it must be removed manually.
 Deleting an item also deletes its cards and their review history, which lowers past daily totals
