@@ -29,9 +29,21 @@ spec:
           envFrom:
             - secretRef:
                 name: french-srs-bot-secrets
+          env:
+            - name: TMPDIR
+              value: /tmp
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: 20m
-              memory: 96Mi
+              memory: 200Mi
             limits:
-              memory: 256Mi
+              # Measured on this node: 155 MB once the piper voice is loaded, peaking at
+              # 309 MB on a long text. Single words stay around 200 MB.
+              memory: 512Mi
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
