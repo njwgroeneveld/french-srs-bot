@@ -13,6 +13,19 @@ def test_migrate_with_retries_returns_applied_versions(conn, monkeypatch):
     ]
 
 
+def test_migrate_with_retries_backs_off_exponentially(monkeypatch):
+    waits = []
+
+    def always_fails(url):
+        raise psycopg.OperationalError("(ECIRCUITBREAKER) too many authentication failures")
+
+    monkeypatch.setattr(entry.db, "connect", always_fails)
+    monkeypatch.setattr(entry.time, "sleep", waits.append)
+    with pytest.raises(psycopg.OperationalError):
+        entry.migrate_with_retries("postgresql://ignored", attempts=5, delay=10, max_delay=50)
+    assert waits == [10, 20, 40, 50]
+
+
 def test_migrate_with_retries_retries_then_succeeds(conn, monkeypatch):
     conn.execute("DROP SCHEMA french CASCADE")
     calls = []
