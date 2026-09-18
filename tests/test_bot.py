@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import psycopg
 from telegram.error import TelegramError
 
 from french_srs_bot import bot, messages, session
@@ -171,3 +172,21 @@ def test_fr_nl_feedback_stays_text_only(settings, monkeypatch):
 
     telegram_bot.send_voice.assert_not_awaited()
     telegram_bot.send_message.assert_awaited_once()
+
+
+def test_a_failed_file_id_write_does_not_send_the_message_twice(settings, monkeypatch):
+    # The voice memo is already delivered; losing the file_id only costs one extra
+    # synthesis later, so it must not fall back to sending the same text again.
+    monkeypatch.setattr(bot.tts, "synthesize", lambda text, tts_settings: b"OggS-fake")
+
+    def boom(conn, **kwargs):
+        raise psycopg.OperationalError("connection gone")
+
+    monkeypatch.setattr(bot.db, "save_voice", boom)
+    telegram_bot = AsyncMock()
+    telegram_bot.send_voice.return_value.voice.file_id = "AwACAgQAAxk"
+
+    asyncio.run(bot.send_question(telegram_bot, 42, object(), CARD, enable_tts(settings)))
+
+    telegram_bot.send_voice.assert_awaited_once()
+    telegram_bot.send_message.assert_not_awaited()

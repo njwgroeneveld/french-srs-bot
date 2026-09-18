@@ -75,10 +75,17 @@ async def send_with_voice(
             caption=text,
             parse_mode=ParseMode.HTML,
         )
-        db.save_voice(conn, item_id=card.item_id, file_id=message.voice.file_id, key=settings.tts.key)
-    except Exception:  # noqa: BLE001 - no failure here may hold back the message
+    except Exception:  # a missing model, a broken voice, a refused upload: all the same here
         log.exception("no audio for card %s, the message goes as text", card.card_id)
         await send(bot, chat_id, text)
+        return
+
+    # The message is already out; forgetting the file_id only costs one extra synthesis later,
+    # so it must not trigger the fallback above and send the same text a second time.
+    try:
+        db.save_voice(conn, item_id=card.item_id, file_id=message.voice.file_id, key=settings.tts.key)
+    except psycopg.Error:
+        log.warning("could not store the file_id of item %s", card.item_id, exc_info=True)
 
 
 async def send_question(
