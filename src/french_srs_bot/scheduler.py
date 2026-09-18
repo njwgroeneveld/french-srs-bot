@@ -22,7 +22,7 @@ async def batch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         with db.connect(deps.secrets.database_url) as conn:
             step = session.scheduled_batch(conn, deps.settings, now)
             if step is not None:
-                await send_step(context.bot, chat_id, conn, step, now)
+                await send_step(context.bot, chat_id, conn, step, now, deps.settings)
     except psycopg.Error:
         log.exception("database unavailable in scheduled batch")
 
