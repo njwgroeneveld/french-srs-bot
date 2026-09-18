@@ -3,27 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from french_srs_bot import config
-from french_srs_bot.config import load_secrets, load_settings, parse_clock, parse_duration
+from french_srs_bot.config import TtsSettings, load_secrets, load_settings, parse_clock, parse_duration
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-SETTINGS_YAML = """
-timezone: Europe/Amsterdam
-daily_goal: 15
-daily_new: 8
-batch_size: 4
-batch_times: ["08:00", "13:00", "19:00"]
-reminder_time: "20:30"
-learning_steps: ["4h", "4h", "1d"]
-relearning_steps: ["4h"]
-typo_min_length: 4
-tts:
-  enabled: true
-  voice: fr_FR-siwis-medium
-  voices_dir: /app/voices
-  length_scale: 1.0
-"""
 
 
 @pytest.mark.parametrize(
@@ -52,11 +34,8 @@ def test_load_settings_from_repo_file():
     assert settings.learning_steps == (timedelta(hours=4), timedelta(hours=4), timedelta(days=1))
 
 
-def test_tts_settings_are_loaded(tmp_path):
-    path = tmp_path / "settings.yaml"
-    path.write_text(SETTINGS_YAML, encoding="utf-8")
-
-    settings = config.load_settings(path)
+def test_tts_settings_are_loaded():
+    settings = load_settings(REPO_ROOT / "settings.yaml")
 
     assert settings.tts.enabled is True
     assert settings.tts.voice == "fr_FR-siwis-medium"
@@ -69,8 +48,8 @@ def test_tts_key_changes_when_the_tempo_changes():
     # Telegram holds is stale and must be made again.
     base = dict(enabled=True, voice="fr_FR-siwis-medium", voices_dir=Path("/app/voices"))
 
-    assert config.TtsSettings(**base, length_scale=1.0).key == "fr_FR-siwis-medium@1.0"
-    assert config.TtsSettings(**base, length_scale=1.2).key == "fr_FR-siwis-medium@1.2"
+    assert TtsSettings(**base, length_scale=1.0).key == "fr_FR-siwis-medium@1.0"
+    assert TtsSettings(**base, length_scale=1.2).key == "fr_FR-siwis-medium@1.2"
 
 
 def test_load_secrets_reports_all_missing_names():
