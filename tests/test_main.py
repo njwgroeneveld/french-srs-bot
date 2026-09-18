@@ -10,6 +10,7 @@ def test_migrate_with_retries_returns_applied_versions(conn, monkeypatch):
     assert entry.migrate_with_retries("postgresql://ignored", attempts=1) == [
         "001_initial",
         "002_theme_lesson",
+        "003_voice",
     ]
 
 
@@ -41,6 +42,7 @@ def test_migrate_with_retries_retries_then_succeeds(conn, monkeypatch):
     assert entry.migrate_with_retries("postgresql://ignored", attempts=5) == [
         "001_initial",
         "002_theme_lesson",
+        "003_voice",
     ]
     assert len(calls) == 3
 

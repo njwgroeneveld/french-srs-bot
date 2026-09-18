@@ -14,6 +14,13 @@ def card_ids(conn, item_id):
     return {row["direction"]: row["id"] for row in rows}
 
 
+def _card_id(conn, item_id: int, direction: str) -> int:
+    row = conn.execute(
+        "SELECT id FROM french.cards WHERE item_id = %s AND direction = %s", (item_id, direction)
+    ).fetchone()
+    return row["id"]
+
+
 def make_due(conn, card_id, *, introduced_at, due):
     conn.execute(
         """
@@ -28,7 +35,7 @@ def make_due(conn, card_id, *, introduced_at, due):
 def test_migrations_are_idempotent(conn):
     assert db.run_migrations(conn) == []
     versions = [r["version"] for r in conn.execute("SELECT version FROM french.schema_migrations")]
-    assert versions == ["001_initial", "002_theme_lesson"]
+    assert versions == ["001_initial", "002_theme_lesson", "003_voice"]
 
 
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, add_items):
@@ -151,3 +158,24 @@ def test_daily_totals_uses_local_dates(conn, add_items):
                    due_before=None, new_state=state, now=late)
     totals = db.daily_totals(conn, timezone_name="Europe/Amsterdam", since=late - timedelta(days=1))
     assert totals == {datetime(2026, 9, 18).date(): 1}
+
+
+def test_voice_file_id_is_stored_on_the_item_and_read_back_with_the_card(conn, add_items):
+    (item_id,) = add_items([("à pied", "te voet")])
+    card = db.get_card(conn, _card_id(conn, item_id, "fr_nl"))
+    assert card.voice_file_id is None
+
+    db.save_voice(conn, item_id=item_id, file_id="AwACAgQAAxk", key="fr_FR-siwis-medium@1.0")
+
+    card = db.get_card(conn, card.card_id)
+    assert card.voice_file_id == "AwACAgQAAxk"
+    assert card.voice_key == "fr_FR-siwis-medium@1.0"
+
+
+def test_both_directions_of_an_item_share_the_audio(conn, add_items):
+    (item_id,) = add_items([("à pied", "te voet")])
+    db.save_voice(conn, item_id=item_id, file_id="AwACAgQAAxk", key="fr_FR-siwis-medium@1.0")
+
+    for direction in ("fr_nl", "nl_fr"):
+        card = db.get_card(conn, _card_id(conn, item_id, direction))
+        assert card.voice_file_id == "AwACAgQAAxk"

@@ -30,6 +30,8 @@ class CardView:
     hint: str | None
     introduced_at: datetime | None
     srs: SrsState | None  # None until the card has been reviewed once
+    voice_file_id: str | None = None  # Telegram's handle for the French audio of this item
+    voice_key: str | None = None  # voice+tempo that audio was made with
 
     @property
     def question(self) -> str:
