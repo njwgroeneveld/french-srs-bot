@@ -3,3 +3,6 @@ psycopg[binary]==3.3.5
 fsrs==6.3.2
 PyYAML>=6.0,<7
 tzdata>=2025.1
+piper-tts==1.8.0
+soundfile==0.14.0
+soxr==1.1.0

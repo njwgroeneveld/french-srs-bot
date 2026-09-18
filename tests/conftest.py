@@ -1,5 +1,6 @@
 import os
 from datetime import time, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -7,7 +8,7 @@ from dotenv import load_dotenv
 from psycopg.conninfo import conninfo_to_dict
 
 from french_srs_bot import db
-from french_srs_bot.config import Settings
+from french_srs_bot.config import Settings, TtsSettings
 
 load_dotenv()
 
@@ -37,6 +38,12 @@ def settings():
         learning_steps=(timedelta(hours=4), timedelta(hours=4), timedelta(days=1)),
         relearning_steps=(timedelta(hours=4),),
         typo_min_length=4,
+        tts=TtsSettings(
+            enabled=False,  # tests switch this on themselves; no model needed by default
+            voice="fr_FR-siwis-medium",
+            voices_dir=Path("/app/voices"),
+            length_scale=1.0,
+        ),
     )
 
 

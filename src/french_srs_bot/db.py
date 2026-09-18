@@ -115,11 +115,20 @@ def upsert_item(
     return row["id"]
 
 
+def save_voice(conn: psycopg.Connection, *, item_id: int, file_id: str, key: str) -> None:
+    """Store Telegram's handle for this item's audio, with the voice+tempo it was made with."""
+    conn.execute(
+        "UPDATE french.items SET voice_file_id = %s, voice_key = %s WHERE id = %s",
+        (file_id, key, item_id),
+    )
+
+
 # --- cards ---------------------------------------------------------------------------------
 
 _CARD_SELECT = """
     SELECT c.id AS card_id, c.item_id, c.direction, c.introduced_at, c.due, c.fsrs_state, c.step,
-           c.stability, c.difficulty, c.last_review, i.french, i.dutch, i.gender, i.hint
+           c.stability, c.difficulty, c.last_review, i.french, i.dutch, i.gender, i.hint,
+           i.voice_file_id, i.voice_key
     FROM french.cards c
     JOIN french.items i ON i.id = c.item_id
     JOIN french.themes t ON t.id = i.theme_id
@@ -155,6 +164,8 @@ def _card_from_row(row: dict) -> CardView:
         hint=row["hint"],
         introduced_at=row["introduced_at"],
         srs=srs,
+        voice_file_id=row["voice_file_id"],
+        voice_key=row["voice_key"],
     )
 
 

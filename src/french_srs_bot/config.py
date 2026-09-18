@@ -29,6 +29,20 @@ def parse_clock(text: str) -> time:
 
 
 @dataclass(frozen=True)
+class TtsSettings:
+    enabled: bool
+    voice: str
+    voices_dir: Path
+    length_scale: float  # 1.0 is the model's own tempo, higher is slower
+
+    @property
+    def key(self) -> str:
+        """Identifies how the audio sounds. A stored file_id whose key no longer matches
+        was made with another voice or tempo, so it is stale."""
+        return f"{self.voice}@{self.length_scale}"
+
+
+@dataclass(frozen=True)
 class Settings:
     timezone: ZoneInfo
     daily_goal: int
@@ -39,6 +53,7 @@ class Settings:
     learning_steps: tuple[timedelta, ...]
     relearning_steps: tuple[timedelta, ...]
     typo_min_length: int
+    tts: TtsSettings
 
 
 def load_settings(path: Path) -> Settings:
@@ -53,6 +68,12 @@ def load_settings(path: Path) -> Settings:
         learning_steps=tuple(parse_duration(s) for s in raw["learning_steps"]),
         relearning_steps=tuple(parse_duration(s) for s in raw["relearning_steps"]),
         typo_min_length=int(raw["typo_min_length"]),
+        tts=TtsSettings(
+            enabled=bool(raw["tts"]["enabled"]),
+            voice=str(raw["tts"]["voice"]),
+            voices_dir=Path(str(raw["tts"]["voices_dir"])),
+            length_scale=float(raw["tts"]["length_scale"]),
+        ),
     )
 
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from french_srs_bot.config import load_secrets, load_settings, parse_clock, parse_duration
+from french_srs_bot.config import TtsSettings, load_secrets, load_settings, parse_clock, parse_duration
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +32,24 @@ def test_load_settings_from_repo_file():
     assert settings.daily_new == 8
     assert settings.batch_times == (time(8, 0), time(13, 0), time(19, 0))
     assert settings.learning_steps == (timedelta(hours=4), timedelta(hours=4), timedelta(days=1))
+
+
+def test_tts_settings_are_loaded():
+    settings = load_settings(REPO_ROOT / "settings.yaml")
+
+    assert settings.tts.enabled is True
+    assert settings.tts.voice == "fr_FR-siwis-medium"
+    assert settings.tts.voices_dir == Path("/app/voices")
+    assert settings.tts.length_scale == 1.0
+
+
+def test_tts_key_changes_when_the_tempo_changes():
+    # The key travels with a stored file_id: change voice or tempo and the audio
+    # Telegram holds is stale and must be made again.
+    base = dict(enabled=True, voice="fr_FR-siwis-medium", voices_dir=Path("/app/voices"))
+
+    assert TtsSettings(**base, length_scale=1.0).key == "fr_FR-siwis-medium@1.0"
+    assert TtsSettings(**base, length_scale=1.2).key == "fr_FR-siwis-medium@1.2"
 
 
 def test_load_secrets_reports_all_missing_names():
