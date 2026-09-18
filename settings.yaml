@@ -7,3 +7,8 @@ reminder_time: "20:30"
 learning_steps: ["4h", "4h", "1d"]   # intro quiz -> +4h -> +1d -> graduated
 relearning_steps: ["4h"]
 typo_min_length: 4      # 1-letter typo tolerance only for answers of >= 4 characters
+tts:
+  enabled: true
+  voice: fr_FR-siwis-medium   # medium spreekt nasalen goed uit, low laat ze vallen
+  voices_dir: /app/voices     # het model zit in de image, niet op een volume
+  length_scale: 1.0           # hoger is langzamer
