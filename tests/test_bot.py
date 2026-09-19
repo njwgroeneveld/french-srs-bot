@@ -143,6 +143,7 @@ def test_nl_fr_feedback_carries_the_french_word_as_audio(settings, monkeypatch):
         result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="le chien"),
         card=dutch_first,
         next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
     )
     telegram_bot = AsyncMock()
     telegram_bot.send_voice.return_value.voice.file_id = "AwACAgQAAxk"
@@ -165,6 +166,7 @@ def test_fr_nl_feedback_stays_text_only(settings, monkeypatch):
         result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="de hond"),
         card=CARD,
         next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
     )
     telegram_bot = AsyncMock()
 
