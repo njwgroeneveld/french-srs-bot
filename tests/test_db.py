@@ -31,7 +31,7 @@ def test_migrations_are_idempotent(conn):
     assert versions == ["001_initial", "002_theme_lesson", "003_voice", "004_users"]
 
 
-def test_upsert_item_creates_both_cards_and_updates_in_place(conn, add_items):
+def test_upsert_item_creates_both_cards_and_updates_in_place(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     assert set(card_ids(conn, item_id)) == {"fr_nl", "nl_fr"}
     theme_id = conn.execute("SELECT theme_id FROM french.items WHERE id = %s", (item_id,)).fetchone()["theme_id"]
@@ -40,137 +40,137 @@ def test_upsert_item_creates_both_cards_and_updates_in_place(conn, add_items):
         english="the dog", gender="m", hint=None,
     )
     assert again == item_id
-    card = db.get_card(conn, card_ids(conn, item_id)["fr_nl"])
+    card = db.get_card(conn, card_ids(conn, item_id)["fr_nl"], user_id=user.id)
     assert card.dutch == ["de hond", "de reu"]
     assert card.gender == "m"
     assert card.srs is None
 
 
-def test_upsert_item_keeps_card_progress(conn, add_items):
+def test_upsert_item_keeps_card_progress(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     fr_nl = card_ids(conn, item_id)["fr_nl"]
     make_due(conn, fr_nl, introduced_at=DAY_START - timedelta(days=3), due=NOW)
     add_items([("le chien", "de hond")])
-    assert db.get_card(conn, fr_nl).srs is not None
+    assert db.get_card(conn, fr_nl, user_id=user.id).srs is not None
 
 
-def test_next_new_card_order_and_sibling_delay(conn, add_items):
+def test_next_new_card_order_and_sibling_delay(conn, user, add_items):
     first, second = add_items([("le chien", "de hond"), ("le chat", "de kat")])
-    new = db.next_new_card(conn, now=NOW, day_start=DAY_START)
+    new = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
     assert (new.item_id, new.direction) == (first, "fr_nl")
 
     # introduced today: its nl_fr must wait for a later day, so the next new card is item 2
-    db.introduce_card(conn, card_ids(conn, first)["fr_nl"], NOW)
-    new = db.next_new_card(conn, now=NOW, day_start=DAY_START)
+    db.introduce_card(conn, card_ids(conn, first)["fr_nl"], NOW, user_id=user.id)
+    new = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
     assert (new.item_id, new.direction) == (second, "fr_nl")
 
     # introduced yesterday and not due: nl_fr of item 1 comes before item 2
     fr_nl = card_ids(conn, first)["fr_nl"]
     make_due(conn, fr_nl, introduced_at=DAY_START - timedelta(hours=1), due=NOW + timedelta(hours=3))
-    new = db.next_new_card(conn, now=NOW, day_start=DAY_START)
+    new = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
     assert (new.item_id, new.direction) == (first, "nl_fr")
 
     # fr_nl due right now: review it first, the reverse direction waits
     make_due(conn, fr_nl, introduced_at=DAY_START - timedelta(hours=1), due=NOW - timedelta(minutes=5))
-    new = db.next_new_card(conn, now=NOW, day_start=DAY_START)
+    new = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
     assert (new.item_id, new.direction) == (second, "fr_nl")
 
 
-def test_due_cards_skips_card_whose_sibling_was_reviewed_today(conn, add_items):
+def test_due_cards_skips_card_whose_sibling_was_reviewed_today(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     ids = card_ids(conn, item_id)
     make_due(conn, ids["fr_nl"], introduced_at=DAY_START - timedelta(days=5), due=NOW - timedelta(hours=1))
     make_due(conn, ids["nl_fr"], introduced_at=DAY_START - timedelta(days=4), due=NOW - timedelta(hours=2))
-    assert [c.direction for c in db.due_cards(conn, now=NOW, day_start=DAY_START)] == ["nl_fr", "fr_nl"]
+    assert [c.direction for c in db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START)] == ["nl_fr", "fr_nl"]
 
     state = SrsState(fsrs_state=2, step=None, stability=6.0, difficulty=5.0,
                      due=NOW + timedelta(days=6), last_review=NOW)
     db.save_review(conn, card_id=ids["nl_fr"], answer="le chien", grade="correct", rating=3,
-                   due_before=NOW - timedelta(hours=2), new_state=state, now=NOW)
-    assert db.due_cards(conn, now=NOW, day_start=DAY_START) == []
+                   due_before=NOW - timedelta(hours=2), new_state=state, now=NOW, user_id=user.id)
+    assert db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START) == []
 
 
-def test_due_cards_includes_introduced_card_without_due(conn, add_items):
+def test_due_cards_includes_introduced_card_without_due(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     fr_nl = card_ids(conn, item_id)["fr_nl"]
-    db.introduce_card(conn, fr_nl, NOW - timedelta(hours=1))
-    assert [c.card_id for c in db.due_cards(conn, now=NOW, day_start=DAY_START)] == [fr_nl]
+    db.introduce_card(conn, fr_nl, NOW - timedelta(hours=1), user_id=user.id)
+    assert [c.card_id for c in db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START)] == [fr_nl]
 
 
-def test_set_pending_if_none(conn, add_items):
+def test_set_pending_if_none(conn, user, add_items):
     first, second = add_items([("le chien", "de hond"), ("le chat", "de kat")])
     card_a = card_ids(conn, first)["fr_nl"]
     card_b = card_ids(conn, second)["fr_nl"]
-    assert db.set_pending_if_none(conn, card_a, NOW) is True
-    assert db.set_pending_if_none(conn, card_b, NOW) is False
-    assert db.set_pending_if_none(conn, card_a, NOW) is False
-    assert db.get_bot_state(conn).pending_card_id == card_a
+    assert db.set_pending_if_none(conn, card_a, NOW, user_id=user.id) is True
+    assert db.set_pending_if_none(conn, card_b, NOW, user_id=user.id) is False
+    assert db.set_pending_if_none(conn, card_a, NOW, user_id=user.id) is False
+    assert db.get_bot_state(conn, user_id=user.id).pending_card_id == card_a
 
 
-def test_save_review_logs_and_clears_pending(conn, add_items):
+def test_save_review_logs_and_clears_pending(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     fr_nl = card_ids(conn, item_id)["fr_nl"]
-    db.introduce_card(conn, fr_nl, NOW)
-    db.set_pending(conn, fr_nl, NOW)
-    db.set_batch_remaining(conn, 4)
+    db.introduce_card(conn, fr_nl, NOW, user_id=user.id)
+    db.set_pending(conn, fr_nl, NOW, user_id=user.id)
+    db.set_batch_remaining(conn, 4, user_id=user.id)
     state = SrsState(fsrs_state=1, step=1, stability=2.3, difficulty=2.1,
                      due=NOW + timedelta(hours=4), last_review=NOW)
     db.save_review(conn, card_id=fr_nl, answer="de hond", grade="correct", rating=3,
-                   due_before=None, new_state=state, now=NOW)
-    assert db.get_bot_state(conn).pending_card_id is None
-    assert db.get_bot_state(conn).batch_remaining == 3
-    card = db.get_card(conn, fr_nl)
+                   due_before=None, new_state=state, now=NOW, user_id=user.id)
+    assert db.get_bot_state(conn, user_id=user.id).pending_card_id is None
+    assert db.get_bot_state(conn, user_id=user.id).batch_remaining == 3
+    card = db.get_card(conn, fr_nl, user_id=user.id)
     assert card.srs.step == 1 and card.srs.due == state.due
-    stats = db.day_stats(conn, day_start=DAY_START, day_end=DAY_START + timedelta(days=1))
+    stats = db.day_stats(conn, user_id=user.id, day_start=DAY_START, day_end=DAY_START + timedelta(days=1))
     assert (stats.total, stats.new, stats.reviews) == (1, 1, 0)
 
 
-def test_save_review_keeps_other_pending_card(conn, add_items):
+def test_save_review_keeps_other_pending_card(conn, user, add_items):
     (first, second) = add_items([("le chien", "de hond"), ("le chat", "de kat")])
     card_a = card_ids(conn, first)["fr_nl"]
     card_b = card_ids(conn, second)["fr_nl"]
-    db.introduce_card(conn, card_a, NOW)
-    db.introduce_card(conn, card_b, NOW)
-    db.set_pending(conn, card_a, NOW)
-    db.set_batch_remaining(conn, 4)
+    db.introduce_card(conn, card_a, NOW, user_id=user.id)
+    db.introduce_card(conn, card_b, NOW, user_id=user.id)
+    db.set_pending(conn, card_a, NOW, user_id=user.id)
+    db.set_batch_remaining(conn, 4, user_id=user.id)
     state = SrsState(fsrs_state=1, step=1, stability=2.3, difficulty=2.1,
                      due=NOW + timedelta(hours=4), last_review=NOW)
     db.save_review(conn, card_id=card_b, answer="de kat", grade="correct", rating=3,
-                   due_before=None, new_state=state, now=NOW)
-    assert db.get_bot_state(conn).pending_card_id == card_a
-    assert db.get_bot_state(conn).batch_remaining == 4
+                   due_before=None, new_state=state, now=NOW, user_id=user.id)
+    assert db.get_bot_state(conn, user_id=user.id).pending_card_id == card_a
+    assert db.get_bot_state(conn, user_id=user.id).batch_remaining == 4
 
 
-def test_daily_totals_uses_local_dates(conn, add_items):
+def test_daily_totals_uses_local_dates(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     fr_nl = card_ids(conn, item_id)["fr_nl"]
     state = SrsState(fsrs_state=1, step=1, stability=1.0, difficulty=1.0, due=NOW, last_review=NOW)
     # 23:30 UTC on the 17th is 01:30 on the 18th in Amsterdam
     late = datetime(2026, 9, 17, 23, 30, tzinfo=timezone.utc)
     db.save_review(conn, card_id=fr_nl, answer="x", grade="wrong", rating=1,
-                   due_before=None, new_state=state, now=late)
-    totals = db.daily_totals(conn, timezone_name="Europe/Amsterdam", since=late - timedelta(days=1))
+                   due_before=None, new_state=state, now=late, user_id=user.id)
+    totals = db.daily_totals(conn, user_id=user.id, timezone_name="Europe/Amsterdam", since=late - timedelta(days=1))
     assert totals == {datetime(2026, 9, 18).date(): 1}
 
 
-def test_voice_file_id_is_stored_on_the_item_and_read_back_with_the_card(conn, add_items):
+def test_voice_file_id_is_stored_on_the_item_and_read_back_with_the_card(conn, user, add_items):
     (item_id,) = add_items([("à pied", "te voet")])
-    card = db.get_card(conn, card_ids(conn, item_id)["fr_nl"])
+    card = db.get_card(conn, card_ids(conn, item_id)["fr_nl"], user_id=user.id)
     assert card.voice_file_id is None
 
     db.save_voice(conn, item_id=item_id, file_id="AwACAgQAAxk", key="fr_FR-siwis-medium@1.0")
 
-    card = db.get_card(conn, card.card_id)
+    card = db.get_card(conn, card.card_id, user_id=user.id)
     assert card.voice_file_id == "AwACAgQAAxk"
     assert card.voice_key == "fr_FR-siwis-medium@1.0"
 
 
-def test_both_directions_of_an_item_share_the_audio(conn, add_items):
+def test_both_directions_of_an_item_share_the_audio(conn, user, add_items):
     (item_id,) = add_items([("à pied", "te voet")])
     db.save_voice(conn, item_id=item_id, file_id="AwACAgQAAxk", key="fr_FR-siwis-medium@1.0")
 
     for direction in ("fr_nl", "nl_fr"):
-        card = db.get_card(conn, card_ids(conn, item_id)[direction])
+        card = db.get_card(conn, card_ids(conn, item_id)[direction], user_id=user.id)
         assert card.voice_file_id == "AwACAgQAAxk"
 
 
@@ -222,3 +222,47 @@ def test_user_overrides_default_to_none(conn):
     assert (niels.daily_goal, niels.daily_new, niels.batch_size) == (None, None, None)
     assert inga.daily_goal == 15
     assert inga.batch_size is None
+
+
+def two_users(conn):
+    """Two users with cards for the same words. Returns (niels, inga)."""
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    conn.execute("INSERT INTO french.users (telegram_user_id, name) VALUES (99, 'Inga')")
+    return db.all_users(conn)
+
+
+def test_users_do_not_see_each_others_cards(conn, add_items):
+    niels, inga = two_users(conn)
+    add_items([("à pied", "te voet")])
+
+    card_id = conn.execute(
+        "SELECT id FROM french.cards WHERE user_id = %s LIMIT 1", (niels.id,)
+    ).fetchone()["id"]
+
+    assert db.get_card(conn, card_id, user_id=niels.id) is not None
+    assert db.get_card(conn, card_id, user_id=inga.id) is None
+
+
+def test_new_cards_and_day_stats_are_per_user(conn, add_items):
+    niels, inga = two_users(conn)
+    add_items([("à pied", "te voet")])
+
+    card = db.next_new_card(conn, user_id=niels.id, now=NOW, day_start=DAY_START)
+    db.introduce_card(conn, card.card_id, NOW, user_id=niels.id)
+
+    # Inga has done nothing, so her first new card is still waiting.
+    assert db.next_new_card(conn, user_id=inga.id, now=NOW, day_start=DAY_START) is not None
+    day_end = NOW + timedelta(days=1)
+    assert db.day_stats(conn, user_id=inga.id, day_start=DAY_START, day_end=day_end).new == 0
+    assert db.day_stats(conn, user_id=niels.id, day_start=DAY_START, day_end=day_end).new == 1
+
+
+def test_the_pending_question_is_per_user(conn, add_items):
+    niels, inga = two_users(conn)
+    add_items([("à pied", "te voet")])
+    card = db.next_new_card(conn, user_id=niels.id, now=NOW, day_start=DAY_START)
+
+    assert db.set_pending_if_none(conn, card.card_id, NOW, user_id=niels.id)
+
+    assert db.get_bot_state(conn, user_id=niels.id).pending_card_id == card.card_id
+    assert db.get_bot_state(conn, user_id=inga.id).pending_card_id is None

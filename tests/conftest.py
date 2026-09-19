@@ -48,8 +48,21 @@ def settings():
 
 
 @pytest.fixture
+def user(conn):
+    """The default user for tests that only need one person."""
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    return db.all_users(conn)[0]
+
+
+@pytest.fixture
 def add_items(conn):
-    """Create a theme with the given (french, dutch) pairs; returns their item ids in order."""
+    """Create a theme with the given (french, dutch) pairs; returns their item ids in order.
+
+    A factory fixture: the closure below only runs once the test calls it, which is always
+    after all requested fixtures (including `user`, for tests that ask for one) have already
+    been set up. So a test that wants a claimed user just has to request `user` too -- no
+    explicit dependency from here is needed to get the ordering right.
+    """
 
     def _add(pairs, theme_ref="theme/1", theme_position=1):
         theme_id = db.upsert_theme(
