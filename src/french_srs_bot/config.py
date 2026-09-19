@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
+
+from .models import User
 
 _DURATION = re.compile(r"^(\d+)([mhd])$")
 _UNITS = {"m": "minutes", "h": "hours", "d": "days"}
@@ -94,3 +96,21 @@ def load_secrets(env: Mapping[str, str] = os.environ) -> Secrets:
         telegram_user_id=int(env["TELEGRAM_USER_ID"]),
         database_url=env["DATABASE_URL"],
     )
+
+
+def settings_for(base: Settings, user: User) -> Settings:
+    """settings.yaml with this user's overrides applied. A NULL column means: follow the shared value.
+
+    Only the pacing knobs are per user. Times, learning steps and the voice stay shared:
+    they drive one set of scheduler jobs and one loaded model for the whole bot.
+    """
+    overrides = {
+        name: value
+        for name, value in (
+            ("daily_goal", user.daily_goal),
+            ("daily_new", user.daily_new),
+            ("batch_size", user.batch_size),
+        )
+        if value is not None
+    }
+    return replace(base, **overrides) if overrides else base

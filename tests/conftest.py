@@ -9,8 +9,14 @@ from psycopg.conninfo import conninfo_to_dict
 
 from french_srs_bot import db
 from french_srs_bot.config import Settings, TtsSettings
+from french_srs_bot.models import User
 
 load_dotenv()
+
+USERS = [
+    User(id=1, telegram_user_id=42, name="Niels"),
+    User(id=2, telegram_user_id=99, name="Inga"),
+]
 
 
 @pytest.fixture
@@ -48,14 +54,27 @@ def settings():
 
 
 @pytest.fixture
+def user(conn):
+    """The default user for tests that only need one person."""
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    return db.all_users(conn)[0]
+
+
+@pytest.fixture
 def add_items(conn):
-    """Create a theme with the given (french, dutch) pairs; returns their item ids in order."""
+    """Create a theme with the given (french, dutch) pairs; returns their item ids in order.
+
+    A factory fixture: the closure below only runs once the test calls it, which is always
+    after all requested fixtures (including `user`, for tests that ask for one) have already
+    been set up. So a test that wants a claimed user just has to request `user` too -- no
+    explicit dependency from here is needed to get the ordering right.
+    """
 
     def _add(pairs, theme_ref="theme/1", theme_position=1):
         theme_id = db.upsert_theme(
             conn, source="test", source_ref=theme_ref, level="A0", name="Test", position=theme_position
         )
-        return [
+        item_ids = [
             db.upsert_item(
                 conn,
                 theme_id=theme_id,
@@ -68,5 +87,7 @@ def add_items(conn):
             )
             for position, (french, dutch) in enumerate(pairs, start=1)
         ]
+        db.sync_cards(conn)
+        return item_ids
 
     return _add

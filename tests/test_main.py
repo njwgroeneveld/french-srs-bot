@@ -1,17 +1,19 @@
 import psycopg
 import pytest
 
-from french_srs_bot import __main__ as entry
+from french_srs_bot import __main__ as entry, db
+
+
+def all_migrations():
+    """Every migration on disk, in the order the runner applies them. Derived rather than
+    listed, so adding a migration does not break these tests."""
+    return sorted(path.stem for path in db.MIGRATIONS_DIR.glob("*.sql"))
 
 
 def test_migrate_with_retries_returns_applied_versions(conn, monkeypatch):
     conn.execute("DROP SCHEMA french CASCADE")
     monkeypatch.setattr(entry.db, "connect", lambda url: conn)
-    assert entry.migrate_with_retries("postgresql://ignored", attempts=1) == [
-        "001_initial",
-        "002_theme_lesson",
-        "003_voice",
-    ]
+    assert entry.migrate_with_retries("postgresql://ignored", attempts=1) == all_migrations()
 
 
 def test_migrate_with_retries_backs_off_exponentially(monkeypatch):
@@ -39,11 +41,7 @@ def test_migrate_with_retries_retries_then_succeeds(conn, monkeypatch):
 
     monkeypatch.setattr(entry.db, "connect", flaky)
     monkeypatch.setattr(entry.time, "sleep", lambda _seconds: None)
-    assert entry.migrate_with_retries("postgresql://ignored", attempts=5) == [
-        "001_initial",
-        "002_theme_lesson",
-        "003_voice",
-    ]
+    assert entry.migrate_with_retries("postgresql://ignored", attempts=5) == all_migrations()
     assert len(calls) == 3
 
 

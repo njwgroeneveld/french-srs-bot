@@ -120,4 +120,7 @@ def load_theme(conn: psycopg.Connection, theme: ThemeFile) -> LoadResult:
             " ORDER BY position, id",
             (theme_id, [item.french[0] for item in theme.items]),
         ).fetchall()
+    # upsert_item no longer creates cards, so do it here: an import should leave the database
+    # ready to practise, not wait for the bot to restart.
+    db.sync_cards(conn)
     return LoadResult(loaded=len(theme.items), stale=[row["french"] for row in rows])

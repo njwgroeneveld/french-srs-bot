@@ -110,13 +110,18 @@ def test_read_theme_file_validates_gender(tmp_path):
 
 
 def test_load_theme_twice_keeps_progress(conn):
+    # Cards exist per user, so an import without a user produces none at all.
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    user_id = db.all_users(conn)[0].id
     theme = read_theme_file(REPO_ROOT / "examples" / "example-theme.yaml")
     assert load_theme(conn, theme).loaded == len(theme.items)
     conn.execute("UPDATE french.cards SET introduced_at = now(), due = now(), fsrs_state = 2")
     theme.items[0].dutch.append("extra")
     load_theme(conn, theme)
     assert conn.execute("SELECT count(*) AS n FROM french.cards WHERE fsrs_state = 2").fetchone()["n"] == 2 * len(theme.items)
-    first = db.get_card(conn, conn.execute("SELECT min(id) AS id FROM french.cards").fetchone()["id"])
+    first = db.get_card(
+        conn, conn.execute("SELECT min(id) AS id FROM french.cards").fetchone()["id"], user_id=user_id
+    )
     assert "extra" in first.dutch
 
 

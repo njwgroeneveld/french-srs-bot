@@ -8,6 +8,7 @@ from html import escape
 
 from .grading import GradeResult
 from .models import CardView, DayStats
+from .session import Standing
 
 BUTTON_UNDERSTOOD = "👍 Begrepen"
 
@@ -32,7 +33,8 @@ def welcome(batch_times: Sequence[time]) -> str:
     return (
         "👋 <b>Bonjour !</b>\n\n"
         f"Ik overhoor je elke dag Franse woordjes, in setjes om {_join_times(batch_times)}.\n"
-        "Typ het antwoord gewoon als bericht. Wil je tussendoor oefenen? Stuur /practice."
+        "Typ het antwoord gewoon als bericht. Wil je tussendoor oefenen? Stuur /practice.\n"
+        "Benieuwd hoe jullie ervoor staan? Stuur /stand."
     )
 
 
@@ -93,3 +95,20 @@ def no_pending_card() -> str:
 
 def database_unavailable() -> str:
     return "⚠️ De database is even niet bereikbaar. Probeer het zo nog eens."
+
+
+def peer_reached_goal(name: str, *, done: int, goal: int) -> str:
+    if done >= goal:
+        return f"🎯 <b>{escape(name)}</b> heeft het dagdoel ook gehaald. Jullie zijn er allebei door!"
+    return f"🎯 <b>{escape(name)}</b> heeft het dagdoel gehaald. Jij zit op {done}/{goal}."
+
+
+def standings(rows: Sequence[Standing]) -> str:
+    lines = ["📊 <b>Deze week</b>", ""]
+    for row in rows:
+        days = "dag" if row.days_reached == 1 else "dagen"
+        lines.append(
+            f"<b>{escape(row.name)}</b> — {row.cards} kaarten, "
+            f"{row.days_reached} {days} gehaald <i>(doel {row.goal})</i>"
+        )
+    return "\n".join(lines)

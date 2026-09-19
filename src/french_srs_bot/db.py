@@ -8,7 +8,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
-from .models import BotState, CardView, DayStats, SrsState
+from .models import BotState, CardView, DayStats, SrsState, User
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 
@@ -54,6 +54,82 @@ def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -
     return applied
 
 
+# --- users ---------------------------------------------------------------------------------
+
+_USER_COLUMNS = "id, telegram_user_id, name, daily_goal, daily_new, batch_size"
+
+
+def _user_from_row(row: dict) -> User:
+    return User(
+        id=row["id"],
+        telegram_user_id=row["telegram_user_id"],
+        name=row["name"],
+        daily_goal=row["daily_goal"],
+        daily_new=row["daily_new"],
+        batch_size=row["batch_size"],
+    )
+
+
+def claim_owner(conn: psycopg.Connection, *, telegram_user_id: int, name: str) -> None:
+    """Give the placeholder from migration 004 its real Telegram id, once.
+
+    The migration attached all pre-existing progress to a row with telegram_user_id = 0
+    because SQL cannot know the real id. After the first claim this is a no-op.
+    """
+    with conn.transaction():
+        conn.execute(
+            "UPDATE french.users SET telegram_user_id = %s, name = %s WHERE telegram_user_id = 0",
+            (telegram_user_id, name),
+        )
+        conn.execute(
+            "INSERT INTO french.users (telegram_user_id, name) VALUES (%s, %s)"
+            " ON CONFLICT (telegram_user_id) DO NOTHING",
+            (telegram_user_id, name),
+        )
+
+
+def all_users(conn: psycopg.Connection) -> list[User]:
+    rows = conn.execute(
+        f"SELECT {_USER_COLUMNS} FROM french.users WHERE telegram_user_id <> 0 ORDER BY id"
+    ).fetchall()
+    return [_user_from_row(row) for row in rows]
+
+
+def user_by_telegram_id(conn: psycopg.Connection, telegram_user_id: int) -> User | None:
+    row = conn.execute(
+        f"SELECT {_USER_COLUMNS} FROM french.users WHERE telegram_user_id = %s",
+        (telegram_user_id,),
+    ).fetchone()
+    return _user_from_row(row) if row else None
+
+
+def sync_cards(conn: psycopg.Connection) -> int:
+    """Make sure every user has a card for every item in both directions, and a state row.
+
+    Runs at startup. This is why upsert_item no longer creates cards itself: with more than
+    one user, whoever adds an item cannot know who needs a card for it. Missing rows are
+    filled in here instead, which also repairs a hand-written SQL import.
+    """
+    with conn.transaction():
+        conn.execute(
+            """
+            INSERT INTO french.bot_state (user_id) SELECT id FROM french.users
+            ON CONFLICT (user_id) DO NOTHING
+            """
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO french.cards (user_id, item_id, direction)
+            SELECT u.id, i.id, d.direction
+            FROM french.users u
+            CROSS JOIN french.items i
+            CROSS JOIN (VALUES ('fr_nl'), ('nl_fr')) AS d(direction)
+            ON CONFLICT (user_id, item_id, direction) DO NOTHING
+            """
+        )
+    return cursor.rowcount
+
+
 # --- content -------------------------------------------------------------------------------
 
 
@@ -92,26 +168,19 @@ def upsert_item(
     gender: str | None,
     hint: str | None,
 ) -> int:
-    """Insert or update an item and make sure both of its cards exist. Card progress is never touched."""
-    with conn.transaction():
-        row = conn.execute(
-            """
-            INSERT INTO french.items (theme_id, position, french, dutch, english, gender, hint)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (theme_id, (french[1]))
-            DO UPDATE SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
-                          english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint
-            RETURNING id
-            """,
-            (theme_id, position, french, dutch, english, gender, hint),
-        ).fetchone()
-        conn.execute(
-            """
-            INSERT INTO french.cards (item_id, direction) VALUES (%s, 'fr_nl'), (%s, 'nl_fr')
-            ON CONFLICT (item_id, direction) DO NOTHING
-            """,
-            (row["id"], row["id"]),
-        )
+    """Insert or update an item. Cards are not created here: with more than one user that is
+    sync_cards's job, at startup."""
+    row = conn.execute(
+        """
+        INSERT INTO french.items (theme_id, position, french, dutch, english, gender, hint)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (theme_id, (french[1]))
+        DO UPDATE SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
+                      english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint
+        RETURNING id
+        """,
+        (theme_id, position, french, dutch, english, gender, hint),
+    ).fetchone()
     return row["id"]
 
 
@@ -138,7 +207,8 @@ _CARD_SELECT = """
 _SIBLING_NOT_REVIEWED_TODAY = """
     NOT EXISTS (
         SELECT 1 FROM french.cards s JOIN french.reviews r ON r.card_id = s.id
-        WHERE s.item_id = c.item_id AND s.id <> c.id AND r.reviewed_at >= %(day_start)s
+        WHERE s.item_id = c.item_id AND s.id <> c.id AND s.user_id = c.user_id
+          AND r.reviewed_at >= %(day_start)s
     )
 """
 
@@ -169,27 +239,38 @@ def _card_from_row(row: dict) -> CardView:
     )
 
 
-def get_card(conn: psycopg.Connection, card_id: int) -> CardView | None:
-    row = conn.execute(_CARD_SELECT + " WHERE c.id = %(card_id)s", {"card_id": card_id}).fetchone()
+def get_card(conn: psycopg.Connection, card_id: int, *, user_id: int) -> CardView | None:
+    row = conn.execute(
+        _CARD_SELECT + " WHERE c.id = %(card_id)s AND c.user_id = %(user_id)s",
+        {"card_id": card_id, "user_id": user_id},
+    ).fetchone()
     return _card_from_row(row) if row else None
 
 
-def due_cards(conn: psycopg.Connection, *, now: datetime, day_start: datetime) -> list[CardView]:
+def due_cards(
+    conn: psycopg.Connection, *, user_id: int, now: datetime, day_start: datetime
+) -> list[CardView]:
     rows = conn.execute(
         _CARD_SELECT
-        + " WHERE c.introduced_at IS NOT NULL AND COALESCE(c.due, c.introduced_at) <= %(now)s AND "
+        + """
+        WHERE c.user_id = %(user_id)s
+          AND c.introduced_at IS NOT NULL AND COALESCE(c.due, c.introduced_at) <= %(now)s AND
+        """
         + _SIBLING_NOT_REVIEWED_TODAY
         + " ORDER BY COALESCE(c.due, c.introduced_at), c.id",
-        {"now": now, "day_start": day_start},
+        {"now": now, "day_start": day_start, "user_id": user_id},
     ).fetchall()
     return [_card_from_row(row) for row in rows]
 
 
-def next_new_card(conn: psycopg.Connection, *, now: datetime, day_start: datetime) -> CardView | None:
+def next_new_card(
+    conn: psycopg.Connection, *, user_id: int, now: datetime, day_start: datetime
+) -> CardView | None:
     row = conn.execute(
         _CARD_SELECT
         + """
-        WHERE c.introduced_at IS NULL
+        WHERE c.user_id = %(user_id)s
+          AND c.introduced_at IS NULL
           AND """
         + _SIBLING_NOT_REVIEWED_TODAY
         + """
@@ -197,7 +278,7 @@ def next_new_card(conn: psycopg.Connection, *, now: datetime, day_start: datetim
               c.direction = 'fr_nl'
               OR EXISTS (
                   SELECT 1 FROM french.cards s
-                  WHERE s.item_id = c.item_id AND s.direction = 'fr_nl'
+                  WHERE s.item_id = c.item_id AND s.direction = 'fr_nl' AND s.user_id = c.user_id
                     AND s.introduced_at IS NOT NULL AND s.introduced_at < %(day_start)s
                     AND (s.due IS NOT NULL AND s.due > %(now)s)
               )
@@ -205,14 +286,15 @@ def next_new_card(conn: psycopg.Connection, *, now: datetime, day_start: datetim
         ORDER BY t.position, i.position, c.direction = 'nl_fr', c.id
         LIMIT 1
         """,
-        {"now": now, "day_start": day_start},
+        {"now": now, "day_start": day_start, "user_id": user_id},
     ).fetchone()
     return _card_from_row(row) if row else None
 
 
-def introduce_card(conn: psycopg.Connection, card_id: int, now: datetime) -> None:
+def introduce_card(conn: psycopg.Connection, card_id: int, now: datetime, *, user_id: int) -> None:
     conn.execute(
-        "UPDATE french.cards SET introduced_at = %s WHERE id = %s AND introduced_at IS NULL", (now, card_id)
+        "UPDATE french.cards SET introduced_at = %s WHERE id = %s AND user_id = %s AND introduced_at IS NULL",
+        (now, card_id, user_id),
     )
 
 
@@ -226,6 +308,7 @@ def save_review(
     due_before: datetime | None,
     new_state: SrsState,
     now: datetime,
+    user_id: int,
 ) -> None:
     """Store the new schedule, log the review and clear the pending card, atomically."""
     with conn.transaction():
@@ -233,7 +316,7 @@ def save_review(
             """
             UPDATE french.cards
             SET due = %s, fsrs_state = %s, step = %s, stability = %s, difficulty = %s, last_review = %s
-            WHERE id = %s
+            WHERE id = %s AND user_id = %s
             """,
             (
                 new_state.due,
@@ -243,6 +326,7 @@ def save_review(
                 new_state.difficulty,
                 new_state.last_review,
                 card_id,
+                user_id,
             ),
         )
         conn.execute(
@@ -256,40 +340,48 @@ def save_review(
             """
             UPDATE french.bot_state
             SET pending_card_id = NULL, pending_since = NULL, batch_remaining = GREATEST(batch_remaining - 1, 0)
-            WHERE id = 1 AND pending_card_id = %s
+            WHERE user_id = %s AND pending_card_id = %s
             """,
-            (card_id,),
+            (user_id, card_id),
         )
 
 
 # --- statistics ----------------------------------------------------------------------------
 
 
-def day_stats(conn: psycopg.Connection, *, day_start: datetime, day_end: datetime) -> DayStats:
+def day_stats(
+    conn: psycopg.Connection, *, user_id: int, day_start: datetime, day_end: datetime
+) -> DayStats:
     row = conn.execute(
         """
         SELECT
-            (SELECT count(*) FROM french.reviews
-             WHERE reviewed_at >= %(start)s AND reviewed_at < %(end)s) AS total,
-            (SELECT count(*) FROM french.cards
-             WHERE introduced_at >= %(start)s AND introduced_at < %(end)s) AS new,
             (SELECT count(*) FROM french.reviews r JOIN french.cards c ON c.id = r.card_id
-             WHERE r.reviewed_at >= %(start)s AND r.reviewed_at < %(end)s
+             WHERE c.user_id = %(user)s
+               AND r.reviewed_at >= %(start)s AND r.reviewed_at < %(end)s) AS total,
+            (SELECT count(*) FROM french.cards
+             WHERE user_id = %(user)s
+               AND introduced_at >= %(start)s AND introduced_at < %(end)s) AS new,
+            (SELECT count(*) FROM french.reviews r JOIN french.cards c ON c.id = r.card_id
+             WHERE c.user_id = %(user)s
+               AND r.reviewed_at >= %(start)s AND r.reviewed_at < %(end)s
                AND c.introduced_at < %(start)s) AS reviews
         """,
-        {"start": day_start, "end": day_end},
+        {"start": day_start, "end": day_end, "user": user_id},
     ).fetchone()
     return DayStats(total=row["total"], new=row["new"], reviews=row["reviews"])
 
 
-def daily_totals(conn: psycopg.Connection, *, timezone_name: str, since: datetime) -> dict[date, int]:
+def daily_totals(
+    conn: psycopg.Connection, *, user_id: int, timezone_name: str, since: datetime
+) -> dict[date, int]:
     rows = conn.execute(
         """
-        SELECT (reviewed_at AT TIME ZONE %(tz)s)::date AS day, count(*) AS total
-        FROM french.reviews WHERE reviewed_at >= %(since)s
+        SELECT (r.reviewed_at AT TIME ZONE %(tz)s)::date AS day, count(*) AS total
+        FROM french.reviews r JOIN french.cards c ON c.id = r.card_id
+        WHERE c.user_id = %(user)s AND r.reviewed_at >= %(since)s
         GROUP BY 1
         """,
-        {"tz": timezone_name, "since": since},
+        {"tz": timezone_name, "since": since, "user": user_id},
     ).fetchall()
     return {row["day"]: row["total"] for row in rows}
 
@@ -297,26 +389,31 @@ def daily_totals(conn: psycopg.Connection, *, timezone_name: str, since: datetim
 # --- bot state -----------------------------------------------------------------------------
 
 
-def get_bot_state(conn: psycopg.Connection) -> BotState:
-    row = conn.execute("SELECT pending_card_id, batch_remaining FROM french.bot_state WHERE id = 1").fetchone()
+def get_bot_state(conn: psycopg.Connection, *, user_id: int) -> BotState:
+    row = conn.execute(
+        "SELECT pending_card_id, batch_remaining FROM french.bot_state WHERE user_id = %s", (user_id,)
+    ).fetchone()
     return BotState(pending_card_id=row["pending_card_id"], batch_remaining=row["batch_remaining"])
 
 
-def set_pending(conn: psycopg.Connection, card_id: int, now: datetime) -> None:
+def set_pending(conn: psycopg.Connection, card_id: int, now: datetime, *, user_id: int) -> None:
     conn.execute(
-        "UPDATE french.bot_state SET pending_card_id = %s, pending_since = %s WHERE id = 1", (card_id, now)
+        "UPDATE french.bot_state SET pending_card_id = %s, pending_since = %s WHERE user_id = %s",
+        (card_id, now, user_id),
     )
 
 
-def set_pending_if_none(conn: psycopg.Connection, card_id: int, now: datetime) -> bool:
+def set_pending_if_none(conn: psycopg.Connection, card_id: int, now: datetime, *, user_id: int) -> bool:
     """Make `card_id` pending only when no card is pending. Returns whether it was set."""
     cursor = conn.execute(
         "UPDATE french.bot_state SET pending_card_id = %s, pending_since = %s"
-        " WHERE id = 1 AND pending_card_id IS NULL",
-        (card_id, now),
+        " WHERE user_id = %s AND pending_card_id IS NULL",
+        (card_id, now, user_id),
     )
     return cursor.rowcount == 1
 
 
-def set_batch_remaining(conn: psycopg.Connection, remaining: int) -> None:
-    conn.execute("UPDATE french.bot_state SET batch_remaining = %s WHERE id = 1", (remaining,))
+def set_batch_remaining(conn: psycopg.Connection, remaining: int, *, user_id: int) -> None:
+    conn.execute(
+        "UPDATE french.bot_state SET batch_remaining = %s WHERE user_id = %s", (remaining, user_id)
+    )

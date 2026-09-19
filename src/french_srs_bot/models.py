@@ -20,6 +20,16 @@ class SrsState:
 
 
 @dataclass(frozen=True)
+class User:
+    id: int
+    telegram_user_id: int
+    name: str
+    daily_goal: int | None = None  # None: follow the shared value from settings.yaml
+    daily_new: int | None = None
+    batch_size: int | None = None
+
+
+@dataclass(frozen=True)
 class CardView:
     card_id: int
     item_id: int

@@ -10,7 +10,7 @@ import psycopg
 from fsrs import Scheduler
 
 from . import db, srs
-from .config import Settings
+from .config import Settings, settings_for
 from .grading import GradeResult, grade
 from .models import CardView, DayStats
 
@@ -35,6 +35,7 @@ class Answered:
     result: GradeResult
     card: CardView
     next: Ask | Summary
+    goal_just_reached: bool  # this very answer took the user over the daily goal
 
 
 def day_bounds(now: datetime, tz: ZoneInfo) -> tuple[datetime, datetime]:
@@ -54,25 +55,29 @@ def compute_streak(totals: dict[date, int], today: date, goal: int) -> int:
     return streak
 
 
-def today_stats(conn: psycopg.Connection, settings: Settings, now: datetime) -> DayStats:
+def today_stats(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> DayStats:
     start, end = day_bounds(now, settings.timezone)
-    return db.day_stats(conn, day_start=start, day_end=end)
+    return db.day_stats(conn, user_id=user_id, day_start=start, day_end=end)
 
 
 def _eligible_now(
-    conn: psycopg.Connection, settings: Settings, now: datetime
+    conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime
 ) -> tuple[list[CardView], CardView | None]:
     """Due cards and the new card allowed right now (None when the new-card allowance is used up)."""
     start, end = day_bounds(now, settings.timezone)
-    stats = db.day_stats(conn, day_start=start, day_end=end)
-    due = db.due_cards(conn, now=now, day_start=start)
+    stats = db.day_stats(conn, user_id=user_id, day_start=start, day_end=end)
+    due = db.due_cards(conn, user_id=user_id, now=now, day_start=start)
     new_allowed = max(settings.daily_new, settings.daily_goal - (stats.reviews + len(due)))
-    new_card = db.next_new_card(conn, now=now, day_start=start) if stats.new < new_allowed else None
+    new_card = (
+        db.next_new_card(conn, user_id=user_id, now=now, day_start=start) if stats.new < new_allowed else None
+    )
     return due, new_card
 
 
-def pick_next(conn: psycopg.Connection, settings: Settings, now: datetime, *, first_of_batch: bool) -> Ask | None:
-    due, new_card = _eligible_now(conn, settings, now)
+def pick_next(
+    conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime, *, first_of_batch: bool
+) -> Ask | None:
+    due, new_card = _eligible_now(conn, settings, user_id, now)
     if first_of_batch and new_card is not None:
         return Ask(new_card, is_new=True)
     if due:
@@ -82,11 +87,13 @@ def pick_next(conn: psycopg.Connection, settings: Settings, now: datetime, *, fi
     return None
 
 
-def summary(conn: psycopg.Connection, settings: Settings, now: datetime) -> Summary:
+def summary(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> Summary:
     start, end = day_bounds(now, settings.timezone)
-    stats = db.day_stats(conn, day_start=start, day_end=end)
-    due, new_card = _eligible_now(conn, settings, now)
-    totals = db.daily_totals(conn, timezone_name=settings.timezone.key, since=start - timedelta(days=366))
+    stats = db.day_stats(conn, user_id=user_id, day_start=start, day_end=end)
+    due, new_card = _eligible_now(conn, settings, user_id, now)
+    totals = db.daily_totals(
+        conn, user_id=user_id, timezone_name=settings.timezone.key, since=start - timedelta(days=366)
+    )
     return Summary(
         done_today=stats.total,
         goal=settings.daily_goal,
@@ -96,52 +103,52 @@ def summary(conn: psycopg.Connection, settings: Settings, now: datetime) -> Summ
     )
 
 
-def start_batch(conn: psycopg.Connection, settings: Settings, now: datetime) -> Ask | Summary:
-    db.set_batch_remaining(conn, settings.batch_size)
-    state = db.get_bot_state(conn)
+def start_batch(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> Ask | Summary:
+    db.set_batch_remaining(conn, settings.batch_size, user_id=user_id)
+    state = db.get_bot_state(conn, user_id=user_id)
     if state.pending_card_id is not None:
-        pending = db.get_card(conn, state.pending_card_id)
+        pending = db.get_card(conn, state.pending_card_id, user_id=user_id)
         if pending is not None:
             return Ask(pending, is_new=False)
-    return pick_next(conn, settings, now, first_of_batch=True) or summary(conn, settings, now)
+    return pick_next(conn, settings, user_id, now, first_of_batch=True) or summary(conn, settings, user_id, now)
 
 
-def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime) -> bool:
+def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime, *, user_id: int) -> bool:
     """Make `card` the pending card. False when another card became pending meanwhile (don't ask it)."""
-    if db.set_pending_if_none(conn, card.card_id, now):
+    if db.set_pending_if_none(conn, card.card_id, now, user_id=user_id):
         return True
-    return db.get_bot_state(conn).pending_card_id == card.card_id
+    return db.get_bot_state(conn, user_id=user_id).pending_card_id == card.card_id
 
 
 def acknowledge_intro(
-    conn: psycopg.Connection, settings: Settings, card_id: int, now: datetime
+    conn: psycopg.Connection, settings: Settings, card_id: int, now: datetime, *, user_id: int
 ) -> CardView | None:
     """User pressed "Begrepen". Returns the card to quiz, or None for a stale button."""
-    card = db.get_card(conn, card_id)
+    card = db.get_card(conn, card_id, user_id=user_id)
     if card is None:
         return None
-    pending = db.get_bot_state(conn).pending_card_id
+    pending = db.get_bot_state(conn, user_id=user_id).pending_card_id
     if pending not in (None, card_id):
         return None
     if pending != card_id:
         # Not the pending card: only accept it if it is exactly the new card that may be introduced now.
-        _due, new_card = _eligible_now(conn, settings, now)
+        _due, new_card = _eligible_now(conn, settings, user_id, now)
         if new_card is None or new_card.card_id != card_id:
             return None
     with conn.transaction():
-        db.introduce_card(conn, card_id, now)
-        db.set_pending(conn, card_id, now)
-    return db.get_card(conn, card_id)
+        db.introduce_card(conn, card_id, now, user_id=user_id)
+        db.set_pending(conn, card_id, now, user_id=user_id)
+    return db.get_card(conn, card_id, user_id=user_id)
 
 
 def answer(
-    conn: psycopg.Connection, settings: Settings, scheduler: Scheduler, text: str, now: datetime
+    conn: psycopg.Connection, settings: Settings, scheduler: Scheduler, text: str, now: datetime, *, user_id: int
 ) -> Answered | None:
     """Grade `text` for the pending card. Returns None when no card is waiting for an answer."""
-    state = db.get_bot_state(conn)
+    state = db.get_bot_state(conn, user_id=user_id)
     if state.pending_card_id is None:
         return None
-    card = db.get_card(conn, state.pending_card_id)
+    card = db.get_card(conn, state.pending_card_id, user_id=user_id)
     if card is None:
         return None
     result = grade(text, card.accepted, card.answer_lang, settings.typo_min_length)
@@ -155,21 +162,63 @@ def answer(
         due_before=card.srs.due if card.srs else None,
         new_state=new_state,
         now=now,
+        user_id=user_id,
     )
+    # Exactly equal, not >=: every answer adds one, so this is true on the crossing answer
+    # only. That keeps the nudge to the other user to one message per day.
+    just_reached = today_stats(conn, settings, user_id, now).total == settings.daily_goal
     next_step: Ask | Summary | None = None
     if state.batch_remaining - 1 > 0:
-        next_step = pick_next(conn, settings, now, first_of_batch=False)
-    return Answered(result=result, card=card, next=next_step or summary(conn, settings, now))
+        next_step = pick_next(conn, settings, user_id, now, first_of_batch=False)
+    return Answered(
+        result=result,
+        card=card,
+        next=next_step or summary(conn, settings, user_id, now),
+        goal_just_reached=just_reached,
+    )
 
 
-def scheduled_batch(conn: psycopg.Connection, settings: Settings, now: datetime) -> Ask | None:
+def scheduled_batch(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> Ask | None:
     """Batch for a scheduled time: nothing when the goal is reached or no card is available."""
-    if today_stats(conn, settings, now).total >= settings.daily_goal:
+    if today_stats(conn, settings, user_id, now).total >= settings.daily_goal:
         return None
-    step = start_batch(conn, settings, now)
+    step = start_batch(conn, settings, user_id, now)
     return step if isinstance(step, Ask) else None
 
 
-def reminder_needed(conn: psycopg.Connection, settings: Settings, now: datetime) -> DayStats | None:
-    stats = today_stats(conn, settings, now)
+def reminder_needed(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> DayStats | None:
+    stats = today_stats(conn, settings, user_id, now)
     return stats if stats.total < settings.daily_goal else None
+
+
+@dataclass(frozen=True)
+class Standing:
+    name: str
+    cards: int  # reviews this week
+    days_reached: int  # days this week this person met their own goal
+    goal: int  # their goal, which need not be everyone's
+
+
+def week_standings(conn: psycopg.Connection, base: Settings, now: datetime) -> list[Standing]:
+    """One row per user over the last seven days, ordered as the users were registered.
+
+    Everyone is measured against their own goal: with different paces a shared number
+    would be meaningless for at least one of them.
+    """
+    start, _end = day_bounds(now, base.timezone)
+    since = start - timedelta(days=6)
+    standings = []
+    for user in db.all_users(conn):
+        settings = settings_for(base, user)
+        totals = db.daily_totals(
+            conn, user_id=user.id, timezone_name=settings.timezone.key, since=since
+        )
+        standings.append(
+            Standing(
+                name=user.name,
+                cards=sum(totals.values()),
+                days_reached=sum(1 for total in totals.values() if total >= settings.daily_goal),
+                goal=settings.daily_goal,
+            )
+        )
+    return standings

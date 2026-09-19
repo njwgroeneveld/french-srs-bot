@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from french_srs_bot.config import TtsSettings, load_secrets, load_settings, parse_clock, parse_duration
+from french_srs_bot.config import TtsSettings, load_secrets, load_settings, parse_clock, parse_duration, settings_for
+from french_srs_bot.models import User
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,3 +84,30 @@ def test_load_secrets():
         {"TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_USER_ID": "42", "DATABASE_URL": "postgresql://x"}
     )
     assert secrets.telegram_user_id == 42
+
+
+def test_a_user_without_overrides_gets_the_shared_settings(settings):
+    user = User(id=1, telegram_user_id=42, name="Niels")
+
+    assert settings_for(settings, user) is settings
+
+
+def test_a_user_override_replaces_only_that_value(settings):
+    user = User(id=2, telegram_user_id=99, name="Inga", daily_goal=15)
+
+    theirs = settings_for(settings, user)
+
+    assert theirs.daily_goal == 15
+    assert theirs.daily_new == settings.daily_new  # not overridden, so shared
+    assert theirs.batch_size == settings.batch_size
+    assert theirs.tts == settings.tts
+    assert settings.daily_goal != 15  # the original is left alone
+
+
+def test_every_override_can_be_set_at_once(settings):
+    user = User(id=3, telegram_user_id=7, name="Test", daily_goal=20, daily_new=5, batch_size=4)
+
+    theirs = settings_for(settings, user)
+
+    assert (theirs.daily_goal, theirs.daily_new, theirs.batch_size) == (20, 5, 4)
+    assert theirs.batch_times == settings.batch_times  # times stay shared

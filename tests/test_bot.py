@@ -7,10 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 import psycopg
 from telegram.error import TelegramError
 
-from french_srs_bot import bot, messages, session
+from french_srs_bot import bot, messages, scheduler, session
 from french_srs_bot.config import Secrets
 from french_srs_bot.grading import Grade, GradeResult
-from french_srs_bot.models import CardView
+from french_srs_bot.models import CardView, DayStats
+
+from conftest import USERS
 
 NOW = datetime(2026, 9, 18, 6, 0, tzinfo=timezone.utc)
 CARD = CardView(
@@ -29,7 +31,8 @@ def make_context(settings):
 
 def test_stale_intro_button_gets_feedback_and_is_removed(settings, monkeypatch):
     monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(object()))
-    monkeypatch.setattr(bot.session, "acknowledge_intro", lambda *args: None)
+    monkeypatch.setattr(bot.db, "user_by_telegram_id", lambda conn, telegram_user_id: USERS[0])
+    monkeypatch.setattr(bot.session, "acknowledge_intro", lambda *args, **kwargs: None)
     update = MagicMock()
     update.effective_user.id = 42
     update.effective_chat.id = 42
@@ -48,16 +51,16 @@ def test_stale_intro_button_gets_feedback_and_is_removed(settings, monkeypatch):
 
 
 def test_send_step_skips_question_when_another_card_is_pending(settings, monkeypatch):
-    monkeypatch.setattr(bot.session, "mark_asked", lambda conn, card, now: False)
+    monkeypatch.setattr(bot.session, "mark_asked", lambda conn, card, now, *, user_id: False)
     telegram_bot = AsyncMock()
-    asyncio.run(bot.send_step(telegram_bot, 42, object(), session.Ask(CARD, is_new=False), NOW, settings))
+    asyncio.run(bot.send_step(telegram_bot, 42, object(), session.Ask(CARD, is_new=False), NOW, settings, 1))
     telegram_bot.send_message.assert_not_awaited()
 
 
 def test_send_step_asks_when_pending_could_be_set(settings, monkeypatch):
-    monkeypatch.setattr(bot.session, "mark_asked", lambda conn, card, now: True)
+    monkeypatch.setattr(bot.session, "mark_asked", lambda conn, card, now, *, user_id: True)
     telegram_bot = AsyncMock()
-    asyncio.run(bot.send_step(telegram_bot, 42, object(), session.Ask(CARD, is_new=False), NOW, settings))
+    asyncio.run(bot.send_step(telegram_bot, 42, object(), session.Ask(CARD, is_new=False), NOW, settings, 1))
     telegram_bot.send_message.assert_awaited_once()
 
 
@@ -143,6 +146,7 @@ def test_nl_fr_feedback_carries_the_french_word_as_audio(settings, monkeypatch):
         result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="le chien"),
         card=dutch_first,
         next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
     )
     telegram_bot = AsyncMock()
     telegram_bot.send_voice.return_value.voice.file_id = "AwACAgQAAxk"
@@ -165,6 +169,7 @@ def test_fr_nl_feedback_stays_text_only(settings, monkeypatch):
         result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="de hond"),
         card=CARD,
         next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
     )
     telegram_bot = AsyncMock()
 
@@ -190,3 +195,86 @@ def test_a_failed_file_id_write_does_not_send_the_message_twice(settings, monkey
 
     telegram_bot.send_voice.assert_awaited_once()
     telegram_bot.send_message.assert_not_awaited()
+
+
+def test_the_scheduled_batch_runs_for_every_user(settings, monkeypatch):
+    asked = []
+    monkeypatch.setattr(scheduler.db, "connect", lambda url: nullcontext(object()))
+    monkeypatch.setattr(scheduler.db, "all_users", lambda conn: USERS)
+    monkeypatch.setattr(
+        scheduler.session, "scheduled_batch",
+        lambda conn, s, user_id, now: asked.append(user_id) or None,
+    )
+    context = make_context(settings)
+
+    asyncio.run(scheduler.batch_job(context))
+
+    assert asked == [1, 2]
+
+
+def test_practice_really_asks_a_question(conn, settings, user, add_items, monkeypatch):
+    """End to end through the real session and db layers: this is what catches signature drift
+    between bot.py and session.py, which unit tests with a mocked session never see."""
+    add_items([("le chien", "de hond")])
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    context = make_context(settings)
+
+    asyncio.run(bot.on_practice(update, context))
+
+    context.bot.send_message.assert_awaited()
+    assert "le chien" in context.bot.send_message.await_args.kwargs["text"]
+
+
+def test_only_the_others_are_nudged_when_someone_reaches_their_goal(settings, monkeypatch):
+    monkeypatch.setattr(bot.db, "all_users", lambda conn: USERS)
+    monkeypatch.setattr(
+        bot.session, "today_stats",
+        lambda conn, s, user_id, now: DayStats(total=12, new=0, reviews=12),
+    )
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.nudge_others(telegram_bot, object(), USERS[0], settings, NOW))
+
+    # Only the other one hears about it, not the person who just finished.
+    assert [call.kwargs["chat_id"] for call in telegram_bot.send_message.await_args_list] == [
+        USERS[1].telegram_user_id
+    ]
+
+
+def test_nobody_is_nudged_when_there_is_only_one_user(settings, monkeypatch):
+    monkeypatch.setattr(bot.db, "all_users", lambda conn: USERS[:1])
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.nudge_others(telegram_bot, object(), USERS[0], settings, NOW))
+
+    telegram_bot.send_message.assert_not_awaited()
+
+
+def test_a_goal_crossing_answer_nudges_the_others(conn, settings, user, add_items, monkeypatch):
+    """Through the real handler: answering the card that crosses the goal must reach the other."""
+    conn.execute("INSERT INTO french.users (telegram_user_id, name) VALUES (99, 'Inga')")
+    add_items([("le chien", "de hond")])
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    nudged = []
+    monkeypatch.setattr(bot, "nudge_others", AsyncMock(side_effect=lambda *a: nudged.append(a[2])))
+    # Make the very next answer the crossing one.
+    monkeypatch.setattr(
+        bot.session, "answer",
+        lambda *args, **kwargs: session.Answered(
+            result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="de hond"),
+            card=CARD,
+            next=session.Summary(done_today=1, goal=1, due_now=0, streak=1, more_available=False),
+            goal_just_reached=True,
+        ),
+    )
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    update.message.text = "de hond"
+
+    asyncio.run(bot.on_text(update, make_context(settings)))
+
+    assert [u.id for u in nudged] == [user.id]
