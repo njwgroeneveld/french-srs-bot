@@ -48,7 +48,16 @@ def main() -> None:
     secrets = load_secrets()
     applied = migrate_with_retries(secrets.database_url)
     logging.info("migrations applied: %s", applied or "none")
-    app = build_application(settings, secrets)
+    with db.connect(secrets.database_url) as conn:
+        db.claim_owner(
+            conn,
+            telegram_user_id=secrets.telegram_user_id,
+            name=os.environ.get("TELEGRAM_USER_NAME", "Niels"),
+        )
+        added = db.sync_cards(conn)
+        users = db.all_users(conn)
+    logging.info("users: %s, cards added: %s", ", ".join(u.name for u in users), added)
+    app = build_application(settings, secrets, users)
     register_jobs(app, settings)
     # bootstrap_retries=-1: keep retrying when Telegram is unreachable at startup (flaky node Wi-Fi)
     # instead of crashing into CrashLoopBackOff.

@@ -9,8 +9,14 @@ from psycopg.conninfo import conninfo_to_dict
 
 from french_srs_bot import db
 from french_srs_bot.config import Settings, TtsSettings
+from french_srs_bot.models import User
 
 load_dotenv()
+
+USERS = [
+    User(id=1, telegram_user_id=42, name="Niels"),
+    User(id=2, telegram_user_id=99, name="Inga"),
+]
 
 
 @pytest.fixture
