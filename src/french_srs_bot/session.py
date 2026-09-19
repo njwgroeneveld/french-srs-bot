@@ -10,7 +10,7 @@ import psycopg
 from fsrs import Scheduler
 
 from . import db, srs
-from .config import Settings
+from .config import Settings, settings_for
 from .grading import GradeResult, grade
 from .models import CardView, DayStats
 
@@ -189,3 +189,36 @@ def scheduled_batch(conn: psycopg.Connection, settings: Settings, user_id: int, 
 def reminder_needed(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> DayStats | None:
     stats = today_stats(conn, settings, user_id, now)
     return stats if stats.total < settings.daily_goal else None
+
+
+@dataclass(frozen=True)
+class Standing:
+    name: str
+    cards: int  # reviews this week
+    days_reached: int  # days this week this person met their own goal
+    goal: int  # their goal, which need not be everyone's
+
+
+def week_standings(conn: psycopg.Connection, base: Settings, now: datetime) -> list[Standing]:
+    """One row per user over the last seven days, ordered as the users were registered.
+
+    Everyone is measured against their own goal: with different paces a shared number
+    would be meaningless for at least one of them.
+    """
+    start, _end = day_bounds(now, base.timezone)
+    since = start - timedelta(days=6)
+    standings = []
+    for user in db.all_users(conn):
+        settings = settings_for(base, user)
+        totals = db.daily_totals(
+            conn, user_id=user.id, timezone_name=settings.timezone.key, since=since
+        )
+        standings.append(
+            Standing(
+                name=user.name,
+                cards=sum(totals.values()),
+                days_reached=sum(1 for total in totals.values() if total >= settings.daily_goal),
+                goal=settings.daily_goal,
+            )
+        )
+    return standings

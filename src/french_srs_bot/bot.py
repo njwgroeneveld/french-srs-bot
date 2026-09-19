@@ -220,6 +220,19 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send(context.bot, chat_id, messages.database_unavailable())
 
 
+async def on_standings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    chat_id = update.effective_chat.id
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            rows = session.week_standings(conn, deps.settings, utcnow())
+    except psycopg.Error:
+        log.exception("database unavailable in /stand")
+        await send(context.bot, chat_id, messages.database_unavailable())
+        return
+    await send(context.bot, chat_id, messages.standings(rows))
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("unhandled error", exc_info=context.error)
 
@@ -247,6 +260,7 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
     known = filters.User(user_id=[u.telegram_user_id for u in users]) & filters.UpdateType.MESSAGE
     app.add_handler(CommandHandler("start", on_start, filters=known))
     app.add_handler(CommandHandler("practice", on_practice, filters=known))
+    app.add_handler(CommandHandler("stand", on_standings, filters=known))
     app.add_handler(CallbackQueryHandler(on_intro_pressed, pattern=r"^intro:\d+$"))
     app.add_handler(MessageHandler(known & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)

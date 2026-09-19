@@ -17,7 +17,7 @@ def test_application_registers_handlers_and_jobs(settings):
 
     handlers = app.handlers[0]
     commands = {cmd for h in handlers if isinstance(h, CommandHandler) for cmd in h.commands}
-    assert commands == {"start", "practice"}
+    assert commands == {"start", "practice", "stand"}
     assert any(isinstance(h, CallbackQueryHandler) for h in handlers)
     assert any(isinstance(h, MessageHandler) for h in handlers)
     assert sorted(job.name for job in app.job_queue.jobs()) == [

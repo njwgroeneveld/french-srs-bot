@@ -291,3 +291,52 @@ def test_day_bounds_dst_end_is_25_hours(settings):
     start, end = session.day_bounds(datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc), settings.timezone)
     assert end.astimezone(timezone.utc) - start.astimezone(timezone.utc) == timedelta(hours=25)
     assert start.utcoffset() != end.utcoffset()
+
+
+def log_reviews(conn, user_id, item_ids, *, count, when):
+    """Write `count` review rows for this user straight into the table, no grading involved."""
+    for item_id in item_ids[:count]:
+        conn.execute(
+            """
+            INSERT INTO french.reviews (card_id, reviewed_at, answer, grade, rating, due_after)
+            SELECT id, %s, 'x', 'correct', 3, %s FROM french.cards
+            WHERE user_id = %s AND item_id = %s AND direction = 'fr_nl'
+            """,
+            (when, when, user_id, item_id),
+        )
+
+
+def test_week_standings_counts_cards_and_days_reached(conn, settings, add_items):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    conn.execute("INSERT INTO french.users (telegram_user_id, name) VALUES (99, 'Inga')")
+    niels, inga = db.all_users(conn)
+    items = add_items([(f"mot{i}", f"woord{i}") for i in range(20)])
+
+    # Niels reaches his goal today; Inga does two cards today and reached her goal yesterday.
+    log_reviews(conn, niels.id, items, count=settings.daily_goal, when=MORNING)
+    log_reviews(conn, inga.id, items, count=2, when=MORNING)
+    log_reviews(conn, inga.id, items, count=settings.daily_goal, when=MORNING - timedelta(days=1))
+
+    rows = session.week_standings(conn, settings, MORNING)
+
+    assert [(r.name, r.cards, r.days_reached, r.goal) for r in rows] == [
+        ("Niels", settings.daily_goal, 1, settings.daily_goal),
+        ("Inga", settings.daily_goal + 2, 1, settings.daily_goal),
+    ]
+
+
+def test_week_standings_measures_everyone_against_their_own_goal(conn, settings, add_items):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    conn.execute(
+        "INSERT INTO french.users (telegram_user_id, name, daily_goal) VALUES (99, 'Inga', 3)"
+    )
+    niels, inga = db.all_users(conn)
+    items = add_items([(f"mot{i}", f"woord{i}") for i in range(20)])
+
+    # The same four cards: below Niels's goal of 10, comfortably past Inga's goal of 3.
+    log_reviews(conn, niels.id, items, count=4, when=MORNING)
+    log_reviews(conn, inga.id, items, count=4, when=MORNING)
+
+    rows = session.week_standings(conn, settings, MORNING)
+
+    assert [(r.name, r.days_reached, r.goal) for r in rows] == [("Niels", 0, 10), ("Inga", 1, 3)]
