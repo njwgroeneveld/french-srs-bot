@@ -26,12 +26,33 @@ def test_parse_clock():
 
 
 def test_load_settings_from_repo_file():
+    """The shipped settings.yaml parses and holds together.
+
+    Deliberately no assertions on the tuning numbers themselves (goal, new, batch size):
+    those are meant to be changed without breaking the build. What is asserted are the
+    relations between them, which a careless edit does break.
+    """
     settings = load_settings(REPO_ROOT / "settings.yaml")
+
     assert settings.timezone.key == "Europe/Amsterdam"
-    assert settings.daily_goal == 15
-    assert settings.daily_new == 8
-    assert settings.batch_times == (time(8, 0), time(13, 0), time(19, 0))
-    assert settings.learning_steps == (timedelta(hours=4), timedelta(hours=4), timedelta(days=1))
+    assert settings.daily_goal > 0
+    assert 0 < settings.daily_new <= settings.daily_goal
+    assert settings.batch_size > 0
+    assert settings.learning_steps and settings.relearning_steps
+
+    # The scheduled batches must be able to reach the goal on their own; otherwise the
+    # evening reminder fires every single day no matter how well you did.
+    assert settings.batch_size * len(settings.batch_times) >= settings.daily_goal
+
+
+def test_the_voice_in_settings_is_the_one_baked_into_the_image():
+    # The model is downloaded at build time by name. Change the voice here and forget the
+    # Dockerfile, and the file is simply missing at runtime: every question falls back to
+    # text, silently. Cheaper to catch it here.
+    settings = load_settings(REPO_ROOT / "settings.yaml")
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert f"ARG PIPER_VOICE={settings.tts.voice}" in dockerfile
 
 
 def test_tts_settings_are_loaded():
@@ -40,7 +61,7 @@ def test_tts_settings_are_loaded():
     assert settings.tts.enabled is True
     assert settings.tts.voice == "fr_FR-siwis-medium"
     assert settings.tts.voices_dir == Path("/app/voices")
-    assert settings.tts.length_scale == 1.0
+    assert settings.tts.length_scale > 0  # the tempo itself is Niels's to tune
 
 
 def test_tts_key_changes_when_the_tempo_changes():

@@ -1,7 +1,7 @@
 timezone: Europe/Amsterdam
-daily_goal: 15          # cards per day
-daily_new: 8            # new cards per day (more only when too few reviews are due to reach the goal)
-batch_size: 4
+daily_goal: 30          # cards per day
+daily_new: 12           # new cards per day (more only when too few reviews are due to reach the goal)
+batch_size: 10          # 3 batches x 10 = daily_goal, so the batches alone reach the goal
 batch_times: ["08:00", "13:00", "19:00"]
 reminder_time: "20:30"
 learning_steps: ["4h", "4h", "1d"]   # intro quiz -> +4h -> +1d -> graduated
