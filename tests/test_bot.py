@@ -10,7 +10,7 @@ from telegram.error import TelegramError
 from french_srs_bot import bot, messages, scheduler, session
 from french_srs_bot.config import Secrets
 from french_srs_bot.grading import Grade, GradeResult
-from french_srs_bot.models import CardView
+from french_srs_bot.models import CardView, DayStats
 
 from conftest import USERS
 
@@ -226,3 +226,55 @@ def test_practice_really_asks_a_question(conn, settings, user, add_items, monkey
 
     context.bot.send_message.assert_awaited()
     assert "le chien" in context.bot.send_message.await_args.kwargs["text"]
+
+
+def test_only_the_others_are_nudged_when_someone_reaches_their_goal(settings, monkeypatch):
+    monkeypatch.setattr(bot.db, "all_users", lambda conn: USERS)
+    monkeypatch.setattr(
+        bot.session, "today_stats",
+        lambda conn, s, user_id, now: DayStats(total=12, new=0, reviews=12),
+    )
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.nudge_others(telegram_bot, object(), USERS[0], settings, NOW))
+
+    # Only the other one hears about it, not the person who just finished.
+    assert [call.kwargs["chat_id"] for call in telegram_bot.send_message.await_args_list] == [
+        USERS[1].telegram_user_id
+    ]
+
+
+def test_nobody_is_nudged_when_there_is_only_one_user(settings, monkeypatch):
+    monkeypatch.setattr(bot.db, "all_users", lambda conn: USERS[:1])
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.nudge_others(telegram_bot, object(), USERS[0], settings, NOW))
+
+    telegram_bot.send_message.assert_not_awaited()
+
+
+def test_a_goal_crossing_answer_nudges_the_others(conn, settings, user, add_items, monkeypatch):
+    """Through the real handler: answering the card that crosses the goal must reach the other."""
+    conn.execute("INSERT INTO french.users (telegram_user_id, name) VALUES (99, 'Inga')")
+    add_items([("le chien", "de hond")])
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    nudged = []
+    monkeypatch.setattr(bot, "nudge_others", AsyncMock(side_effect=lambda *a: nudged.append(a[2])))
+    # Make the very next answer the crossing one.
+    monkeypatch.setattr(
+        bot.session, "answer",
+        lambda *args, **kwargs: session.Answered(
+            result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="de hond"),
+            card=CARD,
+            next=session.Summary(done_today=1, goal=1, due_now=0, streak=1, more_available=False),
+            goal_just_reached=True,
+        ),
+    )
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    update.message.text = "de hond"
+
+    asyncio.run(bot.on_text(update, make_context(settings)))
+
+    assert [u.id for u in nudged] == [user.id]

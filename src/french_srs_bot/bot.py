@@ -120,6 +120,26 @@ async def send_feedback(
         await send(bot, chat_id, text)
 
 
+async def nudge_others(
+    bot: Bot, conn: psycopg.Connection, achiever: User, base: Settings, now: datetime
+) -> None:
+    """Tell everyone else that `achiever` just hit their daily goal.
+
+    Once per person per day: session.answer flags only the crossing answer. Everyone sees
+    their own score against their own goal, not the achiever's.
+    """
+    for other in db.all_users(conn):
+        if other.id == achiever.id:
+            continue
+        settings = settings_for(base, other)
+        stats = session.today_stats(conn, settings, other.id, now)
+        await send(
+            bot,
+            other.telegram_user_id,
+            messages.peer_reached_goal(achiever.name, done=stats.total, goal=settings.daily_goal),
+        )
+
+
 async def send_step(
     bot: Bot,
     chat_id: int,
@@ -215,6 +235,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
             await send_feedback(context.bot, chat_id, conn, answered, settings)
             await send_step(context.bot, chat_id, conn, answered.next, now, settings, user.id)
+            if answered.goal_just_reached:
+                await nudge_others(context.bot, conn, user, deps.settings, now)
     except psycopg.Error:
         log.exception("database unavailable while answering")
         await send(context.bot, chat_id, messages.database_unavailable())

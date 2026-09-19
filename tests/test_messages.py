@@ -66,6 +66,19 @@ def test_welcome_mentions_stand():
     assert "/stand" in messages.welcome([time(9)])
 
 
+def test_peer_reached_goal_names_the_other_and_your_own_score():
+    text = messages.peer_reached_goal("Inga", done=12, goal=30)
+
+    assert "Inga" in text and "12" in text and "30" in text
+
+
+def test_peer_reached_goal_says_something_different_when_you_are_done_too():
+    both = messages.peer_reached_goal("Inga", done=30, goal=30)
+    behind = messages.peer_reached_goal("Inga", done=12, goal=30)
+
+    assert both != behind
+
+
 def test_standings_lists_every_user_with_their_own_goal():
     rows = [
         session.Standing(name="Niels", cards=168, days_reached=5, goal=30),

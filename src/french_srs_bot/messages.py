@@ -97,6 +97,12 @@ def database_unavailable() -> str:
     return "⚠️ De database is even niet bereikbaar. Probeer het zo nog eens."
 
 
+def peer_reached_goal(name: str, *, done: int, goal: int) -> str:
+    if done >= goal:
+        return f"🎯 <b>{escape(name)}</b> heeft het dagdoel ook gehaald. Jullie zijn er allebei door!"
+    return f"🎯 <b>{escape(name)}</b> heeft het dagdoel gehaald. Jij zit op {done}/{goal}."
+
+
 def standings(rows: Sequence[Standing]) -> str:
     lines = ["📊 <b>Deze week</b>", ""]
     for row in rows:
