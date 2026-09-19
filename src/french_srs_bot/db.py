@@ -8,7 +8,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
-from .models import BotState, CardView, DayStats, SrsState
+from .models import BotState, CardView, DayStats, SrsState, User
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 
@@ -54,6 +54,82 @@ def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -
     return applied
 
 
+# --- users ---------------------------------------------------------------------------------
+
+_USER_COLUMNS = "id, telegram_user_id, name, daily_goal, daily_new, batch_size"
+
+
+def _user_from_row(row: dict) -> User:
+    return User(
+        id=row["id"],
+        telegram_user_id=row["telegram_user_id"],
+        name=row["name"],
+        daily_goal=row["daily_goal"],
+        daily_new=row["daily_new"],
+        batch_size=row["batch_size"],
+    )
+
+
+def claim_owner(conn: psycopg.Connection, *, telegram_user_id: int, name: str) -> None:
+    """Give the placeholder from migration 004 its real Telegram id, once.
+
+    The migration attached all pre-existing progress to a row with telegram_user_id = 0
+    because SQL cannot know the real id. After the first claim this is a no-op.
+    """
+    with conn.transaction():
+        conn.execute(
+            "UPDATE french.users SET telegram_user_id = %s, name = %s WHERE telegram_user_id = 0",
+            (telegram_user_id, name),
+        )
+        conn.execute(
+            "INSERT INTO french.users (telegram_user_id, name) VALUES (%s, %s)"
+            " ON CONFLICT (telegram_user_id) DO NOTHING",
+            (telegram_user_id, name),
+        )
+
+
+def all_users(conn: psycopg.Connection) -> list[User]:
+    rows = conn.execute(
+        f"SELECT {_USER_COLUMNS} FROM french.users WHERE telegram_user_id <> 0 ORDER BY id"
+    ).fetchall()
+    return [_user_from_row(row) for row in rows]
+
+
+def user_by_telegram_id(conn: psycopg.Connection, telegram_user_id: int) -> User | None:
+    row = conn.execute(
+        f"SELECT {_USER_COLUMNS} FROM french.users WHERE telegram_user_id = %s",
+        (telegram_user_id,),
+    ).fetchone()
+    return _user_from_row(row) if row else None
+
+
+def sync_cards(conn: psycopg.Connection) -> int:
+    """Make sure every user has a card for every item in both directions, and a state row.
+
+    Runs at startup. This is why upsert_item no longer creates cards itself: with more than
+    one user, whoever adds an item cannot know who needs a card for it. Missing rows are
+    filled in here instead, which also repairs a hand-written SQL import.
+    """
+    with conn.transaction():
+        conn.execute(
+            """
+            INSERT INTO french.bot_state (user_id) SELECT id FROM french.users
+            ON CONFLICT (user_id) DO NOTHING
+            """
+        )
+        cursor = conn.execute(
+            """
+            INSERT INTO french.cards (user_id, item_id, direction)
+            SELECT u.id, i.id, d.direction
+            FROM french.users u
+            CROSS JOIN french.items i
+            CROSS JOIN (VALUES ('fr_nl'), ('nl_fr')) AS d(direction)
+            ON CONFLICT (user_id, item_id, direction) DO NOTHING
+            """
+        )
+    return cursor.rowcount
+
+
 # --- content -------------------------------------------------------------------------------
 
 
@@ -92,26 +168,19 @@ def upsert_item(
     gender: str | None,
     hint: str | None,
 ) -> int:
-    """Insert or update an item and make sure both of its cards exist. Card progress is never touched."""
-    with conn.transaction():
-        row = conn.execute(
-            """
-            INSERT INTO french.items (theme_id, position, french, dutch, english, gender, hint)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (theme_id, (french[1]))
-            DO UPDATE SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
-                          english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint
-            RETURNING id
-            """,
-            (theme_id, position, french, dutch, english, gender, hint),
-        ).fetchone()
-        conn.execute(
-            """
-            INSERT INTO french.cards (item_id, direction) VALUES (%s, 'fr_nl'), (%s, 'nl_fr')
-            ON CONFLICT (item_id, direction) DO NOTHING
-            """,
-            (row["id"], row["id"]),
-        )
+    """Insert or update an item. Cards are not created here: with more than one user that is
+    sync_cards's job, at startup."""
+    row = conn.execute(
+        """
+        INSERT INTO french.items (theme_id, position, french, dutch, english, gender, hint)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (theme_id, (french[1]))
+        DO UPDATE SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
+                      english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint
+        RETURNING id
+        """,
+        (theme_id, position, french, dutch, english, gender, hint),
+    ).fetchone()
     return row["id"]
 
 

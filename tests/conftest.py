@@ -55,7 +55,7 @@ def add_items(conn):
         theme_id = db.upsert_theme(
             conn, source="test", source_ref=theme_ref, level="A0", name="Test", position=theme_position
         )
-        return [
+        item_ids = [
             db.upsert_item(
                 conn,
                 theme_id=theme_id,
@@ -68,5 +68,7 @@ def add_items(conn):
             )
             for position, (french, dutch) in enumerate(pairs, start=1)
         ]
+        db.sync_cards(conn)
+        return item_ids
 
     return _add

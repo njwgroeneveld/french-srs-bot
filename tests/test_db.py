@@ -28,7 +28,7 @@ def make_due(conn, card_id, *, introduced_at, due):
 def test_migrations_are_idempotent(conn):
     assert db.run_migrations(conn) == []
     versions = [r["version"] for r in conn.execute("SELECT version FROM french.schema_migrations")]
-    assert versions == ["001_initial", "002_theme_lesson", "003_voice"]
+    assert versions == ["001_initial", "002_theme_lesson", "003_voice", "004_users"]
 
 
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, add_items):
@@ -172,3 +172,53 @@ def test_both_directions_of_an_item_share_the_audio(conn, add_items):
     for direction in ("fr_nl", "nl_fr"):
         card = db.get_card(conn, card_ids(conn, item_id)[direction])
         assert card.voice_file_id == "AwACAgQAAxk"
+
+
+def test_the_migration_keeps_existing_progress_and_attaches_it_to_one_user(conn, add_items):
+    # The conn fixture runs every migration, so 004 has been applied: there should be
+    # exactly one placeholder user, and every card should hang off it.
+    (item_id,) = add_items([("à pied", "te voet")])
+
+    rows = conn.execute("SELECT DISTINCT user_id FROM french.cards").fetchall()
+    assert len(rows) == 1
+
+    owner = conn.execute("SELECT id, telegram_user_id FROM french.users").fetchall()
+    assert len(owner) == 1
+    assert owner[0]["telegram_user_id"] == 0  # not claimed yet
+    assert rows[0]["user_id"] == owner[0]["id"]
+
+
+def test_claiming_the_owner_is_idempotent(conn):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+
+    users = conn.execute("SELECT telegram_user_id, name FROM french.users").fetchall()
+    assert [(u["telegram_user_id"], u["name"]) for u in users] == [(42, "Niels")]
+
+
+def test_sync_cards_gives_every_user_a_card_for_every_item(conn, add_items):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    conn.execute("INSERT INTO french.users (telegram_user_id, name) VALUES (99, 'Inga')")
+    add_items([("à pied", "te voet"), ("à vélo", "met de fiets")])
+
+    db.sync_cards(conn)
+
+    counts = conn.execute(
+        "SELECT user_id, count(*) AS n FROM french.cards GROUP BY user_id ORDER BY user_id"
+    ).fetchall()
+    assert [row["n"] for row in counts] == [4, 4]  # 2 items x 2 directions, per user
+    states = conn.execute("SELECT count(*) AS n FROM french.bot_state").fetchone()
+    assert states["n"] == 2  # one open-question row per user
+
+
+def test_user_overrides_default_to_none(conn):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    conn.execute(
+        "INSERT INTO french.users (telegram_user_id, name, daily_goal) VALUES (99, 'Inga', 15)"
+    )
+
+    niels, inga = db.all_users(conn)
+
+    assert (niels.daily_goal, niels.daily_new, niels.batch_size) == (None, None, None)
+    assert inga.daily_goal == 15
+    assert inga.batch_size is None
