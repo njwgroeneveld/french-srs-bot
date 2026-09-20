@@ -12,8 +12,6 @@ from pathlib import Path
 
 from french_srs_bot.importer.theme_file import read_theme_file
 
-REPO = Path(__file__).resolve().parents[1]
-
 
 def q(value: str | None) -> str:
     if value is None:
@@ -27,6 +25,10 @@ def arr(values: list[str]) -> str:
 
 def main(yaml_path: str, out_path: str) -> None:
     theme = read_theme_file(Path(yaml_path))
+    if theme.kind != "grammar":
+        # The SQL below writes kind 'grammar' and a gap/translate card pair: for a vocabulary
+        # theme it would create the wrong rows. Those are loaded with the importer.
+        sys.exit(f"{yaml_path}: kind is {theme.kind!r}, this script only generates grammar themes")
     rows = [
         f"  ({position}, {arr(item.french)}, {arr(item.dutch)}, {q(item.sentence)},"
         f" {q(item.gap_answer)}, {q(item.rule)}, {q(item.hint)})"
@@ -46,6 +48,14 @@ ALTER TABLE french.themes ADD COLUMN IF NOT EXISTS choices text[];
 ALTER TABLE french.reviews ADD COLUMN IF NOT EXISTS prev_state jsonb;
 ALTER TABLE french.reviews ADD COLUMN IF NOT EXISTS overridden boolean NOT NULL DEFAULT false;
 ALTER TABLE french.bot_state ADD COLUMN IF NOT EXISTS batch_kind text;
+-- The CHECKs 006 writes inline in its ADD COLUMNs, under the names PostgreSQL gives those,
+-- so a database loaded here ends up identical to a normally migrated one.
+ALTER TABLE french.items DROP CONSTRAINT IF EXISTS items_kind_check;
+ALTER TABLE french.items ADD CONSTRAINT items_kind_check
+    CHECK (kind IN ('vocab', 'grammar'));
+ALTER TABLE french.bot_state DROP CONSTRAINT IF EXISTS bot_state_batch_kind_check;
+ALTER TABLE french.bot_state ADD CONSTRAINT bot_state_batch_kind_check
+    CHECK (batch_kind IS NULL OR batch_kind IN ('vocab', 'grammar'));
 ALTER TABLE french.cards DROP CONSTRAINT IF EXISTS cards_direction_check;
 ALTER TABLE french.cards ADD CONSTRAINT cards_direction_check
     CHECK (direction IN ('fr_nl', 'nl_fr', 'gap', 'translate'));

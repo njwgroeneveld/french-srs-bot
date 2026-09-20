@@ -508,3 +508,30 @@ def test_grammar_still_asks_when_a_sentence_is_waiting(conn, settings, user, add
     markup = context.bot.send_message.await_args.kwargs["reply_markup"]
     buttons = [button for row in markup.inline_keyboard for button in row]
     assert sorted(button.text for button in buttons) == ["mais", "parce que", "pour"]
+
+
+def test_a_gap_button_for_another_card_changes_nothing(conn, settings, user, add_grammar, monkeypatch):
+    """Only the pending card may be graded: an older keyboard must not answer today's question."""
+    items = add_grammar(
+        [("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"]),
+         ("Le métro est pratique, ___ il est cher.", "mais", ["De metro is handig"])],
+    )
+    pending = card_of(conn, items[0], "gap", user.id)
+    other = card_of(conn, items[1], "gap", user.id)
+    db.set_pending(conn, pending, datetime.now(timezone.utc), user_id=user.id)
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    query = update.callback_query
+    query.data = f"gap:{other}:0"
+    query.answer = AsyncMock()
+    query.edit_message_reply_markup = AsyncMock()
+    context = make_context(settings)
+
+    asyncio.run(bot.on_gap_pressed(update, context))
+
+    query.answer.assert_awaited_once_with(messages.stale_intro())
+    assert conn.execute("SELECT count(*) AS n FROM french.reviews").fetchone()["n"] == 0
+    assert db.get_bot_state(conn, user_id=user.id).pending_card_id == pending
+    context.bot.send_message.assert_not_awaited()

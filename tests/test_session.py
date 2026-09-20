@@ -437,7 +437,7 @@ def test_override_reschedules_from_the_state_before_the_review(conn, settings, s
     assert (row["grade"], row["overridden"]) == ("correct", True)
 
 
-def test_override_is_refused_twice_and_after_a_newer_review(conn, settings, scheduler, user, add_grammar):
+def test_override_is_refused_twice(conn, settings, scheduler, user, add_grammar):
     (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
     translate = db.get_card(conn, card_ids(conn, item_id)["translate"], user_id=user.id)
     db.set_batch_remaining(conn, 4, user_id=user.id)
@@ -446,3 +446,17 @@ def test_override_is_refused_twice_and_after_a_newer_review(conn, settings, sche
 
     assert session.override(conn, settings, scheduler, answered.review_id, MORNING, user_id=user.id) is not None
     assert session.override(conn, settings, scheduler, answered.review_id, MORNING, user_id=user.id) is None
+
+
+def test_override_is_refused_after_a_newer_review(conn, settings, scheduler, user, add_grammar):
+    """Answering again moves the card on: rescheduling the older review would undo that."""
+    (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
+    translate = db.get_card(conn, card_ids(conn, item_id)["translate"], user_id=user.id)
+    db.set_batch_remaining(conn, 4, user_id=user.id)
+    session.mark_asked(conn, translate, MORNING, user_id=user.id)
+    first = session.answer(conn, settings, scheduler, "onzin", MORNING, user_id=user.id)
+    session.mark_asked(conn, translate, MORNING, user_id=user.id)
+    second = session.answer(conn, settings, scheduler, "Ik neem de fiets", MORNING, user_id=user.id)
+
+    assert second.review_id != first.review_id
+    assert session.override(conn, settings, scheduler, first.review_id, MORNING, user_id=user.id) is None

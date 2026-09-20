@@ -14,11 +14,8 @@ from french_srs_bot.importer.theme_file import load_theme, read_theme_file, writ
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def read_theme_file_from_text(text, tmp_dir=None):
-    import tempfile
-
-    directory = tmp_dir or tempfile.mkdtemp()
-    path = Path(directory) / "theme.yaml"
+def read_theme_file_from_text(text, tmp_dir):
+    path = Path(tmp_dir) / "theme.yaml"
     path.write_text(text, encoding="utf-8")
     return read_theme_file(path)
 
@@ -299,8 +296,8 @@ def test_grammar_file_validation(tmp_path, broken, message):
         read_theme_file(path)
 
 
-def test_loading_a_grammar_theme_creates_both_cards(conn, user):
-    theme = read_theme_file_from_text(GRAMMAR_YAML)  # see helper below
+def test_loading_a_grammar_theme_creates_both_cards(conn, user, tmp_path):
+    theme = read_theme_file_from_text(GRAMMAR_YAML, tmp_path)  # see helper below
     assert load_theme(conn, theme).loaded == 1
     row = conn.execute(
         "SELECT kind, sentence, gap_answer FROM french.items WHERE kind = 'grammar'"
