@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from telegram import Chat, Message, MessageEntity, Update, User
 from telegram.ext import CallbackQueryHandler, CommandHandler, MessageHandler
 
+from french_srs_bot import bot as bot_module
 from french_srs_bot.bot import build_application
 from french_srs_bot.config import Secrets
 from french_srs_bot.scheduler import register_jobs
@@ -17,7 +18,7 @@ def test_application_registers_handlers_and_jobs(settings):
 
     handlers = app.handlers[0]
     commands = {cmd for h in handlers if isinstance(h, CommandHandler) for cmd in h.commands}
-    assert commands == {"start", "practice", "stand"}
+    assert commands == {"start", "practice", "stand", "help"}
     assert any(isinstance(h, CallbackQueryHandler) for h in handlers)
     assert any(isinstance(h, MessageHandler) for h in handlers)
     assert sorted(job.name for job in app.job_queue.jobs()) == [
@@ -59,3 +60,13 @@ def test_every_known_user_passes_the_filter_and_a_stranger_does_not(settings):
     assert text_handler.check_update(Update(1, message=_message("bonjour", user_id=42)))
     assert text_handler.check_update(Update(2, message=_message("bonjour", user_id=99)))
     assert not text_handler.check_update(Update(3, message=_message("bonjour", user_id=7)))
+
+
+def test_the_telegram_menu_only_offers_registered_commands(settings):
+    """Telegram shows this list when you type "/": it must not promise commands that do not exist."""
+    secrets = Secrets(telegram_bot_token="123:fake", telegram_user_id=42, database_url="postgresql://unused")
+    handlers = build_application(settings, secrets, USERS).handlers[0]
+    registered = {cmd for h in handlers if isinstance(h, CommandHandler) for cmd in h.commands}
+
+    assert {entry.command for entry in bot_module.MENU} <= registered
+    assert all(entry.description for entry in bot_module.MENU)

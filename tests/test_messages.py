@@ -89,3 +89,11 @@ def test_standings_lists_every_user_with_their_own_goal():
 
     assert "Niels" in text and "168" in text and "5" in text and "30" in text
     assert "Inga" in text and "142" in text and "6" in text and "15" in text
+
+
+def test_help_lists_every_command_and_the_personal_goal():
+    text = messages.help_text((time(8), time(19)), goal=30)
+
+    assert "/practice" in text and "/stand" in text and "/help" in text
+    assert "08:00" in text and "19:00" in text
+    assert "30 kaarten" in text

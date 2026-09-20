@@ -34,7 +34,29 @@ def welcome(batch_times: Sequence[time]) -> str:
         "👋 <b>Bonjour !</b>\n\n"
         f"Ik overhoor je elke dag Franse woordjes, in setjes om {_join_times(batch_times)}.\n"
         "Typ het antwoord gewoon als bericht. Wil je tussendoor oefenen? Stuur /practice.\n"
-        "Benieuwd hoe jullie ervoor staan? Stuur /stand."
+        "Benieuwd hoe jullie ervoor staan? Stuur /stand.\n"
+        "Weet je even niet meer hoe iets zit? /help legt alles uit."
+    )
+
+
+def help_text(batch_times: Sequence[time], goal: int) -> str:
+    return (
+        "ℹ️ <b>Hoe werkt het?</b>\n\n"
+        f"Ik stuur je elke dag setjes om {_join_times(batch_times)}, tot je {goal} kaarten hebt "
+        "gedaan. Typ je antwoord gewoon als bericht terug.\n\n"
+        "<b>Commando's</b>\n"
+        "/practice — oefen nu een setje\n"
+        "/stand — hoe staan jullie er deze week voor\n"
+        "/help — dit bericht\n\n"
+        "<b>Wat de tekens betekenen</b>\n"
+        "✅ goed\n"
+        "🟡 alleen een accent verkeerd\n"
+        "🟠 lidwoord of typefout\n"
+        "❌ fout\n\n"
+        "Hoofdletters maken niet uit, accenten wel: <i>a pied</i> is niet hetzelfde als "
+        "<i>à pied</i>.\n\n"
+        "Bij 🇫🇷 → 🇳🇱 hoor je het Franse woord meteen. Bij 🇳🇱 → 🇫🇷 moet je het zelf bedenken, "
+        "dus dat krijg je pas te horen nadat je geantwoord hebt."
     )
 
 

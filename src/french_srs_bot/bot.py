@@ -11,7 +11,7 @@ from io import BytesIO
 
 import psycopg
 from fsrs import Scheduler
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
+from telegram import BotCommand, Bot, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.error import TelegramError
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -255,8 +255,44 @@ async def on_standings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await send(context.bot, chat_id, messages.standings(rows))
 
 
+async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    settings = deps.settings
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is not None:
+                settings = settings_for(settings, user)
+    except psycopg.Error:
+        # Help is exactly what you want when things are broken, so a dead database only
+        # costs the personal goal, not the message.
+        log.warning("database unavailable in /help, showing the shared settings", exc_info=True)
+    await send(
+        context.bot,
+        update.effective_chat.id,
+        messages.help_text(settings.batch_times, settings.daily_goal),
+    )
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("unhandled error", exc_info=context.error)
+
+
+# What Telegram shows when you type "/" in the chat. Far more discoverable than a help text
+# you have to know about first.
+MENU = [
+    BotCommand("practice", "Oefen nu een setje"),
+    BotCommand("stand", "Hoe staan jullie er deze week voor"),
+    BotCommand("help", "Hoe werkt deze bot?"),
+]
+
+
+async def publish_menu(app: Application) -> None:
+    """Register the command menu with Telegram. A flaky network must not block startup."""
+    try:
+        await app.bot.set_my_commands(MENU)
+    except TelegramError:
+        log.warning("could not publish the command menu", exc_info=True)
 
 
 def build_application(settings: Settings, secrets: Secrets, users: Sequence[User]) -> Application:
@@ -271,6 +307,7 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
         .pool_timeout(30)
         .get_updates_connect_timeout(30)
         .get_updates_read_timeout(40)
+        .post_init(publish_menu)
         .build()
     )
     app.bot_data["deps"] = Deps(
@@ -283,6 +320,7 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
     app.add_handler(CommandHandler("start", on_start, filters=known))
     app.add_handler(CommandHandler("practice", on_practice, filters=known))
     app.add_handler(CommandHandler("stand", on_standings, filters=known))
+    app.add_handler(CommandHandler("help", on_help, filters=known))
     app.add_handler(CallbackQueryHandler(on_intro_pressed, pattern=r"^intro:\d+$"))
     app.add_handler(MessageHandler(known & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
