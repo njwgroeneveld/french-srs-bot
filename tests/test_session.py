@@ -5,6 +5,7 @@ import pytest
 from french_srs_bot import db, session
 from french_srs_bot.grading import Grade
 from french_srs_bot.srs import build_scheduler
+from test_db import card_ids
 
 # 08:00 in Amsterdam on 2026-09-18
 MORNING = datetime(2026, 9, 18, 6, 0, tzinfo=timezone.utc)
@@ -406,3 +407,42 @@ def test_the_batch_kind_survives_into_the_next_card(conn, settings, scheduler, u
     answered = session.answer_choice(conn, settings, scheduler, "pour", MORNING, user_id=user.id)
     assert isinstance(answered.next, session.Ask)
     assert answered.next.card.kind == "grammar"
+
+
+def test_override_reschedules_from_the_state_before_the_review(conn, settings, scheduler, user, add_grammar):
+    (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour",
+                              ["Ik neem de fiets om naar mijn werk te gaan"])])
+    # Give the card real progress first: a brand-new card would land on the same due time
+    # for a wrong and a right answer whenever two learning steps happen to be equal-length
+    # (as they are in the `settings` fixture), which would make the assertion below
+    # meaningless. Seeded review progress makes wrong (relearning) vs. right (a normal
+    # review interval) unambiguously different.
+    make_review_due(conn, item_id, "translate", due=MORNING - timedelta(hours=1), user_id=user.id)
+    translate = db.get_card(conn, card_ids(conn, item_id)["translate"], user_id=user.id)
+    db.set_batch_remaining(conn, 4, user_id=user.id)
+    session.mark_asked(conn, translate, MORNING, user_id=user.id)
+
+    answered = session.answer(conn, settings, scheduler, "Ik pak de fiets om te werken", MORNING,
+                              user_id=user.id)
+    assert answered.result.grade is Grade.WRONG
+    wrong_due = db.get_card(conn, translate.card_id, user_id=user.id).srs.due
+
+    card = session.override(conn, settings, scheduler, answered.review_id, MORNING, user_id=user.id)
+    assert card is not None
+    fixed = db.get_card(conn, translate.card_id, user_id=user.id)
+    assert fixed.srs.due > wrong_due  # rescheduled as a correct answer
+    assert "Ik pak de fiets om te werken" in fixed.dutch  # accepted from now on
+    row = conn.execute("SELECT grade, overridden FROM french.reviews WHERE id = %s",
+                       (answered.review_id,)).fetchone()
+    assert (row["grade"], row["overridden"]) == ("correct", True)
+
+
+def test_override_is_refused_twice_and_after_a_newer_review(conn, settings, scheduler, user, add_grammar):
+    (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
+    translate = db.get_card(conn, card_ids(conn, item_id)["translate"], user_id=user.id)
+    db.set_batch_remaining(conn, 4, user_id=user.id)
+    session.mark_asked(conn, translate, MORNING, user_id=user.id)
+    answered = session.answer(conn, settings, scheduler, "onzin", MORNING, user_id=user.id)
+
+    assert session.override(conn, settings, scheduler, answered.review_id, MORNING, user_id=user.id) is not None
+    assert session.override(conn, settings, scheduler, answered.review_id, MORNING, user_id=user.id) is None

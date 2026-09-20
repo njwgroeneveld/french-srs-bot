@@ -262,6 +262,38 @@ def answer_choice(
     return _record(conn, settings, scheduler, card, choice, result, now, state, user_id=user_id)
 
 
+def override(
+    conn: psycopg.Connection,
+    settings: Settings,
+    scheduler: Scheduler,
+    review_id: int,
+    now: datetime,
+    *,
+    user_id: int,
+) -> CardView | None:
+    """Accept the answer of `review_id` after all. None when the button no longer applies.
+
+    The card is rescheduled from the state it had *before* that review, so it ends up exactly
+    where a correct answer would have put it - not one review further along.
+    """
+    row = db.review_for_override(conn, review_id, user_id=user_id)
+    if row is None:
+        return None
+    prev_state = db.state_from_json(row["prev_state"])
+    new_state, rating = srs.review(scheduler, prev_state, Grade.CORRECT, now)
+    db.apply_override(
+        conn,
+        review_id=row["id"],
+        card_id=row["card_id"],
+        item_id=row["item_id"],
+        answer=row["answer"],
+        rating=int(rating),
+        new_state=new_state,
+        user_id=user_id,
+    )
+    return db.get_card(conn, row["card_id"], user_id=user_id)
+
+
 def scheduled_batch(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> Ask | None:
     """Batch for a scheduled time: nothing when the goal is reached or no card is available."""
     if today_stats(conn, settings, user_id, now).total >= settings.daily_goal:

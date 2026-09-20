@@ -427,6 +427,72 @@ def save_review(
     return row["id"]
 
 
+def review_for_override(conn: psycopg.Connection, review_id: int, *, user_id: int) -> dict | None:
+    """The review the override button points at, if it may still be overridden.
+
+    Refused when it is not this user's, already overridden, or no longer the card's newest
+    review: rescheduling an older one would throw away what happened after it.
+    """
+    return conn.execute(
+        """
+        SELECT r.id, r.card_id, r.answer, r.prev_state, c.item_id
+        FROM french.reviews r
+        JOIN french.cards c ON c.id = r.card_id
+        WHERE r.id = %(review_id)s AND c.user_id = %(user_id)s AND r.overridden = false
+          AND NOT EXISTS (
+              SELECT 1 FROM french.reviews later
+              WHERE later.card_id = r.card_id AND later.id > r.id
+          )
+        """,
+        {"review_id": review_id, "user_id": user_id},
+    ).fetchone()
+
+
+def apply_override(
+    conn: psycopg.Connection,
+    *,
+    review_id: int,
+    card_id: int,
+    item_id: int,
+    answer: str,
+    rating: int,
+    new_state: SrsState,
+    user_id: int,
+) -> None:
+    """Re-grade a review as correct: reschedule the card, mark the review, accept the answer."""
+    with conn.transaction():
+        conn.execute(
+            """
+            UPDATE french.cards
+            SET due = %s, fsrs_state = %s, step = %s, stability = %s, difficulty = %s, last_review = %s
+            WHERE id = %s AND user_id = %s
+            """,
+            (
+                new_state.due,
+                new_state.fsrs_state,
+                new_state.step,
+                new_state.stability,
+                new_state.difficulty,
+                new_state.last_review,
+                card_id,
+                user_id,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE french.reviews
+            SET grade = 'correct', rating = %s, due_after = %s, overridden = true
+            WHERE id = %s
+            """,
+            (rating, new_state.due, review_id),
+        )
+        # The answer becomes acceptable for everyone: the words and their translations are shared.
+        conn.execute(
+            "UPDATE french.items SET dutch = dutch || %s::text[] WHERE id = %s AND NOT (%s = ANY(dutch))",
+            ([answer], item_id, answer),
+        )
+
+
 # --- statistics ----------------------------------------------------------------------------
 
 
