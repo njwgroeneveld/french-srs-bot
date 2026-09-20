@@ -32,6 +32,28 @@ def test_migrations_are_idempotent(conn):
     assert versions == all_migrations()
 
 
+def test_grammar_item_gets_a_gap_and_a_translate_card(conn, user, add_grammar):
+    (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
+    ids = card_ids(conn, item_id)
+    assert set(ids) == {"gap", "translate"}
+    gap = db.get_card(conn, ids["gap"], user_id=user.id)
+    assert gap.kind == "grammar"
+    assert gap.sentence == "Je prends le vélo ___ aller au travail."
+    assert gap.gap_answer == "pour"
+    assert gap.rule == "pour + infinitief"
+    assert gap.choices == ["pour", "parce que", "mais"]
+    assert gap.question == "Je prends le vélo ___ aller au travail."
+    translate = db.get_card(conn, ids["translate"], user_id=user.id)
+    assert translate.question == "Je prends le vélo pour aller au travail."
+    assert translate.accepted == ["Ik neem de fiets"]
+
+
+def test_vocab_item_still_gets_the_two_directions(conn, user, add_items):
+    (item_id,) = add_items([("le chien", "de hond")])
+    assert set(card_ids(conn, item_id)) == {"fr_nl", "nl_fr"}
+    assert db.get_card(conn, card_ids(conn, item_id)["fr_nl"], user_id=user.id).kind == "vocab"
+
+
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     assert set(card_ids(conn, item_id)) == {"fr_nl", "nl_fr"}

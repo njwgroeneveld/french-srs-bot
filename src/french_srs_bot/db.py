@@ -135,7 +135,10 @@ def sync_cards(conn: psycopg.Connection) -> int:
             SELECT u.id, i.id, d.direction
             FROM french.users u
             CROSS JOIN french.items i
-            CROSS JOIN (VALUES ('fr_nl'), ('nl_fr')) AS d(direction)
+            CROSS JOIN LATERAL unnest(
+                CASE WHEN i.kind = 'grammar' THEN ARRAY['gap', 'translate']
+                     ELSE ARRAY['fr_nl', 'nl_fr'] END
+            ) AS d(direction)
             ON CONFLICT (user_id, item_id, direction) DO NOTHING
             """
         )
@@ -154,17 +157,18 @@ def upsert_theme(
     name: str,
     position: int,
     lesson: str | None = None,
+    choices: list[str] | None = None,
 ) -> int:
     row = conn.execute(
         """
-        INSERT INTO french.themes (source, source_ref, level, name, position, lesson)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO french.themes (source, source_ref, level, name, position, lesson, choices)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (source, source_ref)
         DO UPDATE SET level = EXCLUDED.level, name = EXCLUDED.name, position = EXCLUDED.position,
-                      lesson = EXCLUDED.lesson
+                      lesson = EXCLUDED.lesson, choices = EXCLUDED.choices
         RETURNING id
         """,
-        (source, source_ref, level, name, position, lesson),
+        (source, source_ref, level, name, position, lesson, choices),
     ).fetchone()
     return row["id"]
 
@@ -179,19 +183,26 @@ def upsert_item(
     english: str | None,
     gender: str | None,
     hint: str | None,
+    kind: str = "vocab",
+    sentence: str | None = None,
+    gap_answer: str | None = None,
+    rule: str | None = None,
 ) -> int:
     """Insert or update an item. Cards are not created here: with more than one user that is
     sync_cards's job, at startup."""
     row = conn.execute(
         """
-        INSERT INTO french.items (theme_id, position, french, dutch, english, gender, hint)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO french.items
+            (theme_id, position, french, dutch, english, gender, hint, kind, sentence, gap_answer, rule)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (theme_id, (french[1]))
         DO UPDATE SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
-                      english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint
+                      english = EXCLUDED.english, gender = EXCLUDED.gender, hint = EXCLUDED.hint,
+                      kind = EXCLUDED.kind, sentence = EXCLUDED.sentence,
+                      gap_answer = EXCLUDED.gap_answer, rule = EXCLUDED.rule
         RETURNING id
         """,
-        (theme_id, position, french, dutch, english, gender, hint),
+        (theme_id, position, french, dutch, english, gender, hint, kind, sentence, gap_answer, rule),
     ).fetchone()
     return row["id"]
 
@@ -209,7 +220,7 @@ def save_voice(conn: psycopg.Connection, *, item_id: int, file_id: str, key: str
 _CARD_SELECT = """
     SELECT c.id AS card_id, c.item_id, c.direction, c.introduced_at, c.due, c.fsrs_state, c.step,
            c.stability, c.difficulty, c.last_review, i.french, i.dutch, i.gender, i.hint,
-           i.voice_file_id, i.voice_key
+           i.voice_file_id, i.voice_key, i.kind, i.sentence, i.gap_answer, i.rule, t.choices
     FROM french.cards c
     JOIN french.items i ON i.id = c.item_id
     JOIN french.themes t ON t.id = i.theme_id
@@ -248,6 +259,11 @@ def _card_from_row(row: dict) -> CardView:
         srs=srs,
         voice_file_id=row["voice_file_id"],
         voice_key=row["voice_key"],
+        kind=row["kind"],
+        sentence=row["sentence"],
+        gap_answer=row["gap_answer"],
+        rule=row["rule"],
+        choices=list(row["choices"] or []),
     )
 
 

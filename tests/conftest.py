@@ -98,3 +98,35 @@ def add_items(conn):
         return item_ids
 
     return _add
+
+
+@pytest.fixture
+def add_grammar(conn):
+    """Create a grammar theme with (sentence, gap, dutch) triples; returns the item ids."""
+
+    def _add(triples, theme_ref="theme/g1", theme_position=1, choices=("pour", "parce que", "mais")):
+        theme_id = db.upsert_theme(
+            conn, source="test", source_ref=theme_ref, level="A1.1", name="Grammar",
+            position=theme_position, choices=list(choices),
+        )
+        item_ids = [
+            db.upsert_item(
+                conn,
+                theme_id=theme_id,
+                position=position,
+                french=[sentence.replace("___", gap)],
+                dutch=list(dutch),
+                english=None,
+                gender=None,
+                hint=None,
+                kind="grammar",
+                sentence=sentence,
+                gap_answer=gap,
+                rule="pour + infinitief",
+            )
+            for position, (sentence, gap, dutch) in enumerate(triples, start=1)
+        ]
+        db.sync_cards(conn)
+        return item_ids
+
+    return _add
