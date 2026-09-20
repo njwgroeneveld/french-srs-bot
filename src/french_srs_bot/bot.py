@@ -126,22 +126,25 @@ def choice_from_callback(card: CardView, data: str) -> str | None:
 
 async def send_question(
     bot: Bot, chat_id: int, conn: psycopg.Connection, card: CardView, settings: Settings
-) -> None:
-    """Ask the question. The French sounds wherever it is the question itself: with FR->NL and
-    with a sentence to translate. With NL->FR and with a gap to fill it would give the answer away."""
+) -> bool:
+    """Ask the question. False when the card has no answerable question and nothing was sent.
+
+    The French sounds wherever it is the question itself: with FR->NL and with a sentence to
+    translate. With NL->FR and with a gap to fill it would give the answer away."""
     text = messages.prompt(card)
     if card.direction == "gap":
         if not card.choices:
-            # Hand-edited row: a gap card without choices has no answerable question. Skipping it
-            # leaves it unasked and due, which is recoverable; sending it would strand the batch.
+            # Hand-edited row: a gap card without choices has no answerable question. The caller
+            # has to let go of it, or the batch stays parked on a question nobody ever sees.
             log.error("grammar card %s has no choices, skipping it", card.card_id)
-            return
+            return False
         await send(bot, chat_id, text, gap_markup(card))
-        return
+        return True
     if settings.tts.enabled and card.direction in ("fr_nl", "translate"):
         await send_with_voice(bot, chat_id, conn, card, text, settings)
     else:
         await send(bot, chat_id, text)
+    return True
 
 
 async def send_feedback(
@@ -196,6 +199,7 @@ async def send_step(
     now: datetime,
     settings: Settings,
     user_id: int,
+    retries: int = 1,
 ) -> None:
     """Send the next thing to the user: an intro, a question, or a summary."""
     if isinstance(step, session.Summary):
@@ -212,7 +216,19 @@ async def send_step(
         # Another card became pending meanwhile (e.g. a scheduled batch): that question stays open.
         log.info("not asking card %s: another card is pending", step.card.card_id)
         return
-    await send_question(bot, chat_id, conn, step.card, settings)
+    if await send_question(bot, chat_id, conn, step.card, settings):
+        return
+    # The card is pending but unaskable. Letting go of it is what keeps the batch alive: a card
+    # nobody can answer would otherwise come back as the pending card of every later batch.
+    db.clear_pending(conn, step.card.card_id, user_id=user_id)
+    if retries <= 0:
+        log.error("no askable card after card %s, sending nothing", step.card.card_id)
+        return
+    state = db.get_bot_state(conn, user_id=user_id)
+    next_step = session.pick_next(
+        conn, settings, user_id, now, first_of_batch=False, kind=state.batch_kind
+    ) or session.summary(conn, settings, user_id, now)
+    await send_step(bot, chat_id, conn, next_step, now, settings, user_id, retries - 1)
 
 
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -270,6 +286,9 @@ async def on_gap_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     query = update.callback_query
     chat_id = update.effective_chat.id
     now = utcnow()
+    # Telegram refuses a second answer to the same callback query with a BadRequest, which
+    # would replace the message below by an unhandled error.
+    answered_query = False
     try:
         with db.connect(deps.secrets.database_url) as conn:
             user = user_of(conn, update)
@@ -285,6 +304,7 @@ async def on_gap_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await query.answer(messages.stale_intro())
                 return
             await query.answer()
+            answered_query = True
             answered = session.answer_choice(conn, settings, deps.scheduler, choice, now, user_id=user.id)
             if answered is None:
                 return
@@ -294,7 +314,8 @@ async def on_gap_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await nudge_others(context.bot, conn, user, deps.settings, now)
     except psycopg.Error:
         log.exception("database unavailable on a gap button")
-        await query.answer()
+        if not answered_query:
+            await query.answer()
         await send(context.bot, chat_id, messages.database_unavailable())
         return
     try:
@@ -320,6 +341,7 @@ async def on_override_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE
     except psycopg.Error:
         log.exception("database unavailable on the override button")
         await query.answer()
+        await send(context.bot, update.effective_chat.id, messages.database_unavailable())
         return
     try:
         await query.edit_message_reply_markup(reply_markup=None)

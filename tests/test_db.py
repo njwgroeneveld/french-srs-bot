@@ -381,3 +381,22 @@ def test_marking_an_announcement_seen_never_goes_backwards(conn):
     db.mark_announcement_seen(conn, user_id=user.id, announcement_id=1)
 
     assert db.all_users(conn)[0].last_announcement == 3
+
+
+def test_clear_pending_only_clears_its_own_card(conn, add_items):
+    niels, inga = two_users(conn)
+    first, second = add_items([("le chien", "de hond"), ("le chat", "de kat")])
+    pending = card_ids_for(conn, first, niels.id)["fr_nl"]
+    other_card = card_ids_for(conn, second, niels.id)["fr_nl"]
+    for_inga = card_ids_for(conn, first, inga.id)["fr_nl"]
+    db.set_pending(conn, pending, NOW, user_id=niels.id)
+    db.set_pending(conn, for_inga, NOW, user_id=inga.id)
+
+    # A card that is not the pending one leaves the open question alone.
+    db.clear_pending(conn, other_card, user_id=niels.id)
+    assert db.get_bot_state(conn, user_id=niels.id).pending_card_id == pending
+
+    db.clear_pending(conn, pending, user_id=niels.id)
+
+    assert db.get_bot_state(conn, user_id=niels.id).pending_card_id is None
+    assert db.get_bot_state(conn, user_id=inga.id).pending_card_id == for_inga

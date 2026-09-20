@@ -1,16 +1,16 @@
 import asyncio
 from contextlib import nullcontext
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import psycopg
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 
-from french_srs_bot import bot, messages, scheduler, session
+from french_srs_bot import bot, db, messages, scheduler, session
 from french_srs_bot.config import Secrets
 from french_srs_bot.grading import Grade, GradeResult
-from french_srs_bot.models import CardView, DayStats
+from french_srs_bot.models import BotState, CardView, DayStats
 
 from conftest import USERS
 
@@ -375,3 +375,106 @@ def test_a_grammar_card_without_choices_is_not_asked(settings, caplog):
 
     telegram_bot.send_message.assert_not_awaited()
     assert "choices" in caplog.text
+
+
+def test_a_choiceless_gap_card_does_not_strand_the_batch(
+    conn, settings, user, add_items, add_grammar, monkeypatch
+):
+    """An unusable card must not stay pending: every later /practice would answer nothing at all.
+
+    Through the real session and db layers, because the stranding was exactly in the seam
+    between send_step (which makes a card pending) and send_question (which refused it).
+    """
+    (grammar_item,) = add_grammar(
+        [("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])],
+        theme_ref="theme/g1", theme_position=1, choices=(),
+    )
+    (vocab_item,) = add_items([("le chien", "de hond")], theme_ref="theme/v1", theme_position=2)
+    gap_card = card_of(conn, grammar_item, "gap", user.id)
+    vocab_card = card_of(conn, vocab_item, "fr_nl", user.id)
+    # A review that was already waiting, so there is a next card to move on to.
+    real_now = datetime.now(timezone.utc)
+    conn.execute(
+        """
+        UPDATE french.cards SET introduced_at = %s, due = %s, fsrs_state = 2, step = NULL,
+               stability = 5.0, difficulty = 5.0, last_review = %s
+        WHERE id = %s
+        """,
+        (real_now - timedelta(days=1), real_now - timedelta(hours=1), real_now - timedelta(days=1),
+         vocab_card),
+    )
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    context = make_context(settings)
+
+    asyncio.run(bot.on_practice(update, context))
+
+    state = db.get_bot_state(conn, user_id=user.id)
+    assert state.pending_card_id != gap_card
+    assert state.pending_card_id == vocab_card
+    assert "le chien" in context.bot.send_message.await_args.kwargs["text"]
+
+
+def card_of(conn, item_id, direction, user_id):
+    return conn.execute(
+        "SELECT id FROM french.cards WHERE item_id = %s AND direction = %s AND user_id = %s",
+        (item_id, direction, user_id),
+    ).fetchone()["id"]
+
+
+def test_a_database_error_on_a_gap_button_is_reported_once(settings, monkeypatch):
+    """Answering the same callback query twice raises BadRequest, which would swallow the message."""
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(object()))
+    monkeypatch.setattr(bot.db, "user_by_telegram_id", lambda conn, telegram_user_id: USERS[0])
+    monkeypatch.setattr(
+        bot.db, "get_bot_state",
+        lambda conn, *, user_id: BotState(pending_card_id=GAP_CARD.card_id, batch_remaining=4),
+    )
+    monkeypatch.setattr(bot.db, "get_card", lambda conn, card_id, *, user_id: GAP_CARD)
+
+    def boom(*args, **kwargs):
+        raise psycopg.OperationalError("connection gone")
+
+    monkeypatch.setattr(bot.session, "answer_choice", boom)
+    answered = []
+
+    async def answer(text=None):
+        if answered:
+            raise BadRequest("Query is too old and response timeout expired")
+        answered.append(text)
+
+    update = MagicMock()
+    update.effective_user.id = 42
+    update.effective_chat.id = 42
+    query = update.callback_query
+    query.data = f"gap:{GAP_CARD.card_id}:0"
+    query.answer = answer
+    context = make_context(settings)
+
+    asyncio.run(bot.on_gap_pressed(update, context))
+
+    assert answered == [None]
+    assert context.bot.send_message.await_args.kwargs["text"] == messages.database_unavailable()
+
+
+def test_a_database_error_on_the_override_button_is_reported(settings, monkeypatch):
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(object()))
+    monkeypatch.setattr(bot.db, "user_by_telegram_id", lambda conn, telegram_user_id: USERS[0])
+
+    def boom(*args, **kwargs):
+        raise psycopg.OperationalError("connection gone")
+
+    monkeypatch.setattr(bot.session, "override", boom)
+    update = MagicMock()
+    update.effective_user.id = 42
+    update.effective_chat.id = 42
+    query = update.callback_query
+    query.data = "ok:123"
+    query.answer = AsyncMock()
+    context = make_context(settings)
+
+    asyncio.run(bot.on_override_pressed(update, context))
+
+    assert context.bot.send_message.await_args.kwargs["text"] == messages.database_unavailable()

@@ -588,6 +588,19 @@ def set_pending_if_none(conn: psycopg.Connection, card_id: int, now: datetime, *
     return cursor.rowcount == 1
 
 
+def clear_pending(conn: psycopg.Connection, card_id: int, *, user_id: int) -> None:
+    """Withdraw `card_id` as the open question, only while it still is the pending one.
+
+    For a card that turned out to be unaskable: leaving it pending would keep every later
+    batch serving that same card, with no message going out at all.
+    """
+    conn.execute(
+        "UPDATE french.bot_state SET pending_card_id = NULL, pending_since = NULL"
+        " WHERE user_id = %s AND pending_card_id = %s",
+        (user_id, card_id),
+    )
+
+
 def set_batch_remaining(
     conn: psycopg.Connection, remaining: int, *, user_id: int, kind: str | None = None
 ) -> None:
