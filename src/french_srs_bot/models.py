@@ -57,6 +57,8 @@ class CardView:
     @property
     def question(self) -> str:
         if self.direction == "gap":
+            if self.sentence is None:
+                raise ValueError(f"grammar card {self.card_id} has no sentence")
             return self.sentence
         if self.direction in ("fr_nl", "translate"):
             return self.french[0]
@@ -65,6 +67,8 @@ class CardView:
     @property
     def accepted(self) -> list[str]:
         if self.direction == "gap":
+            if self.gap_answer is None:
+                raise ValueError(f"grammar card {self.card_id} has no gap answer")
             return [self.gap_answer]
         return self.dutch if self.direction in ("fr_nl", "translate") else self.french
 

@@ -28,7 +28,10 @@ def make_due(conn, card_id, *, introduced_at, due):
 
 def test_migrations_are_idempotent(conn):
     assert db.run_migrations(conn) == []
-    versions = [r["version"] for r in conn.execute("SELECT version FROM french.schema_migrations")]
+    versions = [
+        r["version"]
+        for r in conn.execute("SELECT version FROM french.schema_migrations ORDER BY version")
+    ]
     assert versions == all_migrations()
 
 

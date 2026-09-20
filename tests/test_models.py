@@ -1,3 +1,5 @@
+import pytest
+
 from french_srs_bot.models import PRIMARY, SECONDARY, CardView
 
 
@@ -39,11 +41,27 @@ def test_gap_card_asks_the_sentence_and_accepts_the_connector():
 
 def test_translate_card_asks_the_completed_sentence():
     translate = card("translate", kind="grammar", sentence="Je prends le vélo ___ aller au travail.")
-    assert translate.question == "Je prends le vélo pour aller au travail." or (
-        translate.question == translate.french[0]
-    )
+    assert translate.question == "Je prends le vélo pour aller au travail."
     assert translate.accepted == ["Ik neem de fiets om naar mijn werk te gaan"]
     assert translate.answer_lang == "nl"
+
+
+def test_gap_card_without_a_sentence_fails_loudly_on_question():
+    gap = card("gap", kind="grammar", sentence=None, gap_answer="pour", choices=["pour", "mais"])
+    with pytest.raises(ValueError, match="has no sentence"):
+        gap.question
+
+
+def test_gap_card_without_a_gap_answer_fails_loudly_on_accepted():
+    gap = card(
+        "gap",
+        kind="grammar",
+        sentence="Je prends le vélo ___ aller au travail.",
+        gap_answer=None,
+        choices=["pour", "mais"],
+    )
+    with pytest.raises(ValueError, match="has no gap answer"):
+        gap.accepted
 
 
 def test_primary_and_secondary_per_kind():
