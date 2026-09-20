@@ -43,6 +43,14 @@ from french_srs_bot.grading import Grade, grade, levenshtein, normalize, strip_a
         ("la maison", ["l'école"], "fr", Grade.WRONG, "wrong"),
         ("", ["l'école"], "fr", Grade.WRONG, "wrong"),
         ("?", ["l'école"], "fr", Grade.WRONG, "wrong"),
+        # a full sentence, as a translate card grades it
+        ("ik neem de fiets om naar mijn werk te gaan.",
+         ["Ik neem de fiets om naar mijn werk te gaan"], "nl", Grade.CORRECT, "exact"),
+        ("Ik neem de fiets om naar mijn werk te gaen",
+         ["Ik neem de fiets om naar mijn werk te gaan"], "nl", Grade.HARD, "typo"),
+        ("Je kunt de stad zonder auto bezichtigen",
+         ["Je kunt de stad zonder auto bezoeken", "Je kunt de stad zonder auto bezichtigen"],
+         "nl", Grade.CORRECT, "exact"),
     ],
 )
 def test_grade(answer, accepted, lang, expected_grade, expected_reason):

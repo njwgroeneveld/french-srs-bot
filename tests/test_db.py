@@ -145,7 +145,7 @@ def test_due_cards_skips_card_whose_sibling_was_reviewed_today(conn, user, add_i
     state = SrsState(fsrs_state=2, step=None, stability=6.0, difficulty=5.0,
                      due=NOW + timedelta(days=6), last_review=NOW)
     db.save_review(conn, card_id=ids["nl_fr"], answer="le chien", grade="correct", rating=3,
-                   due_before=NOW - timedelta(hours=2), new_state=state, now=NOW, user_id=user.id)
+                   due_before=NOW - timedelta(hours=2), prev_state=None, new_state=state, now=NOW, user_id=user.id)
     assert db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START) == []
 
 
@@ -175,7 +175,7 @@ def test_save_review_logs_and_clears_pending(conn, user, add_items):
     state = SrsState(fsrs_state=1, step=1, stability=2.3, difficulty=2.1,
                      due=NOW + timedelta(hours=4), last_review=NOW)
     db.save_review(conn, card_id=fr_nl, answer="de hond", grade="correct", rating=3,
-                   due_before=None, new_state=state, now=NOW, user_id=user.id)
+                   due_before=None, prev_state=None, new_state=state, now=NOW, user_id=user.id)
     assert db.get_bot_state(conn, user_id=user.id).pending_card_id is None
     assert db.get_bot_state(conn, user_id=user.id).batch_remaining == 3
     card = db.get_card(conn, fr_nl, user_id=user.id)
@@ -195,7 +195,7 @@ def test_save_review_keeps_other_pending_card(conn, user, add_items):
     state = SrsState(fsrs_state=1, step=1, stability=2.3, difficulty=2.1,
                      due=NOW + timedelta(hours=4), last_review=NOW)
     db.save_review(conn, card_id=card_b, answer="de kat", grade="correct", rating=3,
-                   due_before=None, new_state=state, now=NOW, user_id=user.id)
+                   due_before=None, prev_state=None, new_state=state, now=NOW, user_id=user.id)
     assert db.get_bot_state(conn, user_id=user.id).pending_card_id == card_a
     assert db.get_bot_state(conn, user_id=user.id).batch_remaining == 4
 
@@ -207,7 +207,7 @@ def test_daily_totals_uses_local_dates(conn, user, add_items):
     # 23:30 UTC on the 17th is 01:30 on the 18th in Amsterdam
     late = datetime(2026, 9, 17, 23, 30, tzinfo=timezone.utc)
     db.save_review(conn, card_id=fr_nl, answer="x", grade="wrong", rating=1,
-                   due_before=None, new_state=state, now=late, user_id=user.id)
+                   due_before=None, prev_state=None, new_state=state, now=late, user_id=user.id)
     totals = db.daily_totals(conn, user_id=user.id, timezone_name="Europe/Amsterdam", since=late - timedelta(days=1))
     assert totals == {datetime(2026, 9, 18).date(): 1}
 
@@ -347,6 +347,26 @@ def card_ids_for(conn, item_id, user_id):
         (item_id, user_id),
     ).fetchall()
     return {row["direction"]: row["id"] for row in rows}
+
+
+def test_save_review_stores_the_state_it_started_from(conn, user, add_items):
+    (item_id,) = add_items([("le chien", "de hond")])
+    fr_nl = card_ids(conn, item_id)["fr_nl"]
+    db.introduce_card(conn, fr_nl, NOW, user_id=user.id)
+    state = SrsState(fsrs_state=1, step=1, stability=2.3, difficulty=2.1,
+                     due=NOW + timedelta(hours=4), last_review=NOW)
+    review_id = db.save_review(conn, card_id=fr_nl, answer="de hond", grade="correct", rating=3,
+                               due_before=None, prev_state=None, new_state=state, now=NOW,
+                               user_id=user.id)
+    row = conn.execute("SELECT prev_state, overridden FROM french.reviews WHERE id = %s",
+                       (review_id,)).fetchone()
+    assert row["prev_state"] is None and row["overridden"] is False
+
+    second = db.save_review(conn, card_id=fr_nl, answer="de hond", grade="correct", rating=3,
+                            due_before=state.due, prev_state=state, new_state=state, now=NOW,
+                            user_id=user.id)
+    stored = conn.execute("SELECT prev_state FROM french.reviews WHERE id = %s", (second,)).fetchone()
+    assert stored["prev_state"]["fsrs_state"] == 1 and stored["prev_state"]["step"] == 1
 
 
 def test_marking_an_announcement_seen_never_goes_backwards(conn):

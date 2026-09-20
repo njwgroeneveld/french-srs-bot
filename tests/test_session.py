@@ -368,3 +368,41 @@ def test_a_brand_new_word_is_still_introduced_first(conn, settings, add_items, u
 
     assert step.card.direction == "fr_nl"
     assert step.is_new is True
+
+
+def test_answer_choice_grades_the_pending_gap_card(conn, settings, scheduler, user, add_grammar):
+    (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
+    step = session.start_batch(conn, settings, user.id, MORNING)
+    assert step.card.direction == "gap"
+    session.mark_asked(conn, step.card, MORNING, user_id=user.id)
+
+    answered = session.answer_choice(conn, settings, scheduler, "mais", MORNING, user_id=user.id)
+    assert answered.result.grade is Grade.WRONG
+    assert answered.result.expected == "pour"
+
+    session.mark_asked(conn, step.card, MORNING, user_id=user.id)
+    answered = session.answer_choice(conn, settings, scheduler, "pour", MORNING, user_id=user.id)
+    assert answered.result.grade is Grade.CORRECT
+
+
+def test_grammar_batch_serves_only_grammar(conn, settings, user, add_items, add_grammar):
+    add_items([("le chien", "de hond")], theme_ref="theme/v1", theme_position=1)
+    add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])],
+                theme_ref="theme/g1", theme_position=2)
+    step = session.start_batch(conn, settings, user.id, MORNING, kind="grammar")
+    assert step.card.kind == "grammar"
+    assert db.get_bot_state(conn, user_id=user.id).batch_kind == "grammar"
+
+
+def test_the_batch_kind_survives_into_the_next_card(conn, settings, scheduler, user, add_items, add_grammar):
+    add_items([("le chien", "de hond")], theme_ref="theme/v1", theme_position=1)
+    add_grammar(
+        [("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"]),
+         ("Le métro est pratique, ___ il est cher.", "mais", ["De metro is handig, maar duur"])],
+        theme_ref="theme/g1", theme_position=2,
+    )
+    step = session.start_batch(conn, settings, user.id, MORNING, kind="grammar")
+    session.mark_asked(conn, step.card, MORNING, user_id=user.id)
+    answered = session.answer_choice(conn, settings, scheduler, "pour", MORNING, user_id=user.id)
+    assert isinstance(answered.next, session.Ask)
+    assert answered.next.card.kind == "grammar"

@@ -11,8 +11,8 @@ from fsrs import Scheduler
 
 from . import db, srs
 from .config import Settings, settings_for
-from .grading import GradeResult, grade
-from .models import CardView, DayStats
+from .grading import Grade, GradeResult, grade
+from .models import BotState, CardView, DayStats
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class Answered:
     card: CardView
     next: Ask | Summary
     goal_just_reached: bool  # this very answer took the user over the daily goal
+    review_id: int | None = None  # the review this answer produced, for the override button
 
 
 def day_bounds(now: datetime, tz: ZoneInfo) -> tuple[datetime, datetime]:
@@ -61,15 +62,21 @@ def today_stats(conn: psycopg.Connection, settings: Settings, user_id: int, now:
 
 
 def _eligible_now(
-    conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime
+    conn: psycopg.Connection,
+    settings: Settings,
+    user_id: int,
+    now: datetime,
+    kind: str | None = None,
 ) -> tuple[list[CardView], CardView | None]:
     """Due cards and the new card allowed right now (None when the new-card allowance is used up)."""
     start, end = day_bounds(now, settings.timezone)
     stats = db.day_stats(conn, user_id=user_id, day_start=start, day_end=end)
-    due = db.due_cards(conn, user_id=user_id, now=now, day_start=start)
+    due = db.due_cards(conn, user_id=user_id, now=now, day_start=start, kind=kind)
     new_allowed = max(settings.daily_new, settings.daily_goal - (stats.reviews + len(due)))
     new_card = (
-        db.next_new_card(conn, user_id=user_id, now=now, day_start=start) if stats.new < new_allowed else None
+        db.next_new_card(conn, user_id=user_id, now=now, day_start=start, kind=kind)
+        if stats.new < new_allowed
+        else None
     )
     return due, new_card
 
@@ -85,9 +92,15 @@ def needs_intro(card: CardView) -> bool:
 
 
 def pick_next(
-    conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime, *, first_of_batch: bool
+    conn: psycopg.Connection,
+    settings: Settings,
+    user_id: int,
+    now: datetime,
+    *,
+    first_of_batch: bool,
+    kind: str | None = None,
 ) -> Ask | None:
-    due, new_card = _eligible_now(conn, settings, user_id, now)
+    due, new_card = _eligible_now(conn, settings, user_id, now, kind)
     if first_of_batch and new_card is not None:
         return Ask(new_card, is_new=needs_intro(new_card))
     if due:
@@ -113,14 +126,22 @@ def summary(conn: psycopg.Connection, settings: Settings, user_id: int, now: dat
     )
 
 
-def start_batch(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> Ask | Summary:
-    db.set_batch_remaining(conn, settings.batch_size, user_id=user_id)
+def start_batch(
+    conn: psycopg.Connection,
+    settings: Settings,
+    user_id: int,
+    now: datetime,
+    kind: str | None = None,
+) -> Ask | Summary:
+    db.set_batch_remaining(conn, settings.batch_size, user_id=user_id, kind=kind)
     state = db.get_bot_state(conn, user_id=user_id)
     if state.pending_card_id is not None:
         pending = db.get_card(conn, state.pending_card_id, user_id=user_id)
         if pending is not None:
             return Ask(pending, is_new=False)
-    return pick_next(conn, settings, user_id, now, first_of_batch=True) or summary(conn, settings, user_id, now)
+    return pick_next(conn, settings, user_id, now, first_of_batch=True, kind=kind) or summary(
+        conn, settings, user_id, now
+    )
 
 
 def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime, *, user_id: int) -> bool:
@@ -170,14 +191,31 @@ def answer(
     if card is None:
         return None
     result = grade(text, card.accepted, card.answer_lang, settings.typo_min_length)
+    return _record(conn, settings, scheduler, card, text, result, now, state, user_id=user_id)
+
+
+def _record(
+    conn: psycopg.Connection,
+    settings: Settings,
+    scheduler: Scheduler,
+    card: CardView,
+    text: str,
+    result: GradeResult,
+    now: datetime,
+    state: BotState,
+    *,
+    user_id: int,
+) -> Answered:
+    """Schedule the card, log the review and work out what comes next."""
     new_state, rating = srs.review(scheduler, card.srs, result.grade, now)
-    db.save_review(
+    review_id = db.save_review(
         conn,
         card_id=card.card_id,
         answer=text,
         grade=result.grade.value,
         rating=int(rating),
         due_before=card.srs.due if card.srs else None,
+        prev_state=card.srs,
         new_state=new_state,
         now=now,
         user_id=user_id,
@@ -187,13 +225,41 @@ def answer(
     just_reached = today_stats(conn, settings, user_id, now).total == settings.daily_goal
     next_step: Ask | Summary | None = None
     if state.batch_remaining - 1 > 0:
-        next_step = pick_next(conn, settings, user_id, now, first_of_batch=False)
+        next_step = pick_next(
+            conn, settings, user_id, now, first_of_batch=False, kind=state.batch_kind
+        )
     return Answered(
         result=result,
         card=card,
         next=next_step or summary(conn, settings, user_id, now),
         goal_just_reached=just_reached,
+        review_id=review_id,
     )
+
+
+def answer_choice(
+    conn: psycopg.Connection,
+    settings: Settings,
+    scheduler: Scheduler,
+    choice: str,
+    now: datetime,
+    *,
+    user_id: int,
+) -> Answered | None:
+    """Grade a tapped choice for the pending gap card. None when no gap card is waiting."""
+    state = db.get_bot_state(conn, user_id=user_id)
+    if state.pending_card_id is None:
+        return None
+    card = db.get_card(conn, state.pending_card_id, user_id=user_id)
+    if card is None or card.direction != "gap":
+        return None
+    correct = choice == card.gap_answer
+    result = GradeResult(
+        grade=Grade.CORRECT if correct else Grade.WRONG,
+        reason="exact" if correct else "wrong",
+        expected=card.gap_answer,
+    )
+    return _record(conn, settings, scheduler, card, choice, result, now, state, user_id=user_id)
 
 
 def scheduled_batch(conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime) -> Ask | None:

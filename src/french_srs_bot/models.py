@@ -99,3 +99,4 @@ class DayStats:
 class BotState:
     pending_card_id: int | None
     batch_remaining: int
+    batch_kind: str | None = None  # the kind /grammar restricted this batch to, None for a mixed one

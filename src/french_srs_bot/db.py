@@ -7,6 +7,7 @@ from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from .models import BotState, CardView, DayStats, SrsState, ThemeProgress, User
 
@@ -267,6 +268,36 @@ def _card_from_row(row: dict) -> CardView:
     )
 
 
+def _state_as_json(state: SrsState | None) -> Jsonb | None:
+    """The FSRS state as stored in reviews.prev_state. Datetimes go in as ISO strings."""
+    if state is None:
+        return None
+    return Jsonb(
+        {
+            "fsrs_state": state.fsrs_state,
+            "step": state.step,
+            "stability": state.stability,
+            "difficulty": state.difficulty,
+            "due": state.due.isoformat(),
+            "last_review": state.last_review.isoformat() if state.last_review else None,
+        }
+    )
+
+
+def state_from_json(data: dict | None) -> SrsState | None:
+    """Inverse of _state_as_json, for the override."""
+    if data is None:
+        return None
+    return SrsState(
+        fsrs_state=data["fsrs_state"],
+        step=data["step"],
+        stability=data["stability"],
+        difficulty=data["difficulty"],
+        due=datetime.fromisoformat(data["due"]),
+        last_review=datetime.fromisoformat(data["last_review"]) if data["last_review"] else None,
+    )
+
+
 def get_card(conn: psycopg.Connection, card_id: int, *, user_id: int) -> CardView | None:
     row = conn.execute(
         _CARD_SELECT + " WHERE c.id = %(card_id)s AND c.user_id = %(user_id)s",
@@ -349,11 +380,15 @@ def save_review(
     grade: str,
     rating: int,
     due_before: datetime | None,
+    prev_state: SrsState | None,
     new_state: SrsState,
     now: datetime,
     user_id: int,
-) -> None:
-    """Store the new schedule, log the review and clear the pending card, atomically."""
+) -> int:
+    """Store the new schedule, log the review and clear the pending card, atomically.
+
+    Returns the id of the review row, which the override button needs.
+    """
     with conn.transaction():
         conn.execute(
             """
@@ -372,13 +407,15 @@ def save_review(
                 user_id,
             ),
         )
-        conn.execute(
+        row = conn.execute(
             """
-            INSERT INTO french.reviews (card_id, reviewed_at, answer, grade, rating, due_before, due_after)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO french.reviews
+                (card_id, reviewed_at, answer, grade, rating, due_before, due_after, prev_state)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
             """,
-            (card_id, now, answer, grade, rating, due_before, new_state.due),
-        )
+            (card_id, now, answer, grade, rating, due_before, new_state.due, _state_as_json(prev_state)),
+        ).fetchone()
         conn.execute(
             """
             UPDATE french.bot_state
@@ -387,6 +424,7 @@ def save_review(
             """,
             (user_id, card_id),
         )
+    return row["id"]
 
 
 # --- statistics ----------------------------------------------------------------------------
@@ -457,9 +495,14 @@ def daily_totals(
 
 def get_bot_state(conn: psycopg.Connection, *, user_id: int) -> BotState:
     row = conn.execute(
-        "SELECT pending_card_id, batch_remaining FROM french.bot_state WHERE user_id = %s", (user_id,)
+        "SELECT pending_card_id, batch_remaining, batch_kind FROM french.bot_state WHERE user_id = %s",
+        (user_id,),
     ).fetchone()
-    return BotState(pending_card_id=row["pending_card_id"], batch_remaining=row["batch_remaining"])
+    return BotState(
+        pending_card_id=row["pending_card_id"],
+        batch_remaining=row["batch_remaining"],
+        batch_kind=row["batch_kind"],
+    )
 
 
 def set_pending(conn: psycopg.Connection, card_id: int, now: datetime, *, user_id: int) -> None:
@@ -479,7 +522,10 @@ def set_pending_if_none(conn: psycopg.Connection, card_id: int, now: datetime, *
     return cursor.rowcount == 1
 
 
-def set_batch_remaining(conn: psycopg.Connection, remaining: int, *, user_id: int) -> None:
+def set_batch_remaining(
+    conn: psycopg.Connection, remaining: int, *, user_id: int, kind: str | None = None
+) -> None:
     conn.execute(
-        "UPDATE french.bot_state SET batch_remaining = %s WHERE user_id = %s", (remaining, user_id)
+        "UPDATE french.bot_state SET batch_remaining = %s, batch_kind = %s WHERE user_id = %s",
+        (remaining, kind, user_id),
     )
