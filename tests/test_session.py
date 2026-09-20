@@ -202,9 +202,10 @@ def test_stale_intro_button_respects_eligibility(conn, settings, scheduler, add_
         """,
         {"intro": MORNING - timedelta(days=1), "due": afternoon - timedelta(minutes=5), "id": fr_nl},
     )
-    # 08:00: fr_nl is not due yet, so the intro for nl_fr is sent (button not pressed)
+    # 08:00: fr_nl is not due yet, so nl_fr is offered - as a direct question, since the
+    # word itself is not new. Not answered here, so it stays unstarted.
     step = session.start_batch(conn, settings, user.id, MORNING)
-    assert step.is_new and step.card.card_id == nl_fr
+    assert step.card.card_id == nl_fr and step.is_new is False
     # 13:00: fr_nl is due and gets answered
     step = session.start_batch(conn, settings, user.id, afternoon)
     assert step.card.card_id == fr_nl and step.is_new is False
@@ -340,3 +341,30 @@ def test_week_standings_measures_everyone_against_their_own_goal(conn, settings,
     rows = session.week_standings(conn, settings, MORNING)
 
     assert [(r.name, r.days_reached, r.goal) for r in rows] == [("Niels", 0, 10), ("Inga", 1, 3)]
+
+
+def test_the_reverse_direction_is_asked_without_reintroducing_the_word(
+    conn, settings, scheduler, add_items, user
+):
+    """NL->FR of a word already learned the other way round must not show the answer first."""
+    (item,) = add_items([("en voiture", "met de auto")])
+    make_review_due(conn, item, "fr_nl", due=MORNING + timedelta(days=3), user_id=user.id)
+
+    step = session.start_batch(conn, settings, user.id, MORNING)
+
+    assert step.card.direction == "nl_fr"
+    assert step.is_new is False  # no intro, no "Begrepen" button, no answer given away
+    assert step.card.introduced_at is None
+
+    # Asking it is what starts it: otherwise the card would never be scheduled again.
+    assert session.mark_asked(conn, step.card, MORNING, user_id=user.id)
+    assert db.get_card(conn, step.card.card_id, user_id=user.id).introduced_at is not None
+
+
+def test_a_brand_new_word_is_still_introduced_first(conn, settings, add_items, user):
+    add_items([("le chien", "de hond")])
+
+    step = session.start_batch(conn, settings, user.id, MORNING)
+
+    assert step.card.direction == "fr_nl"
+    assert step.is_new is True

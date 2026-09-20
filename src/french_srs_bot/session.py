@@ -74,16 +74,26 @@ def _eligible_now(
     return due, new_card
 
 
+def needs_intro(card: CardView) -> bool:
+    """Whether to show the word and its translation before quizzing it.
+
+    Only when the *word* is new, not when only the direction is. A NL->FR card is offered
+    exclusively once its FR->NL sibling was learned on an earlier day (see db.next_new_card),
+    so the word has been seen: introducing it again would hand over the answer.
+    """
+    return card.direction == "fr_nl"
+
+
 def pick_next(
     conn: psycopg.Connection, settings: Settings, user_id: int, now: datetime, *, first_of_batch: bool
 ) -> Ask | None:
     due, new_card = _eligible_now(conn, settings, user_id, now)
     if first_of_batch and new_card is not None:
-        return Ask(new_card, is_new=True)
+        return Ask(new_card, is_new=needs_intro(new_card))
     if due:
         return Ask(due[0], is_new=False)
     if new_card is not None:
-        return Ask(new_card, is_new=True)
+        return Ask(new_card, is_new=needs_intro(new_card))
     return None
 
 
@@ -114,10 +124,18 @@ def start_batch(conn: psycopg.Connection, settings: Settings, user_id: int, now:
 
 
 def mark_asked(conn: psycopg.Connection, card: CardView, now: datetime, *, user_id: int) -> bool:
-    """Make `card` the pending card. False when another card became pending meanwhile (don't ask it)."""
-    if db.set_pending_if_none(conn, card.card_id, now, user_id=user_id):
-        return True
-    return db.get_bot_state(conn, user_id=user_id).pending_card_id == card.card_id
+    """Make `card` the pending card. False when another card became pending meanwhile (don't ask it).
+
+    A card that skipped the intro starts here: for a brand-new word `acknowledge_intro` has
+    already set introduced_at, but a card without an intro would otherwise stay unstarted and
+    never come back.
+    """
+    if not db.set_pending_if_none(conn, card.card_id, now, user_id=user_id):
+        if db.get_bot_state(conn, user_id=user_id).pending_card_id != card.card_id:
+            return False
+    if card.introduced_at is None:
+        db.introduce_card(conn, card.card_id, now, user_id=user_id)
+    return True
 
 
 def acknowledge_intro(
