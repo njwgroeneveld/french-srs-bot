@@ -18,7 +18,7 @@ def test_application_registers_handlers_and_jobs(settings):
 
     handlers = app.handlers[0]
     commands = {cmd for h in handlers if isinstance(h, CommandHandler) for cmd in h.commands}
-    assert commands == {"start", "practice", "stand", "volgorde", "help"}
+    assert commands == {"start", "practice", "grammar", "stand", "volgorde", "help"}
     assert any(isinstance(h, CallbackQueryHandler) for h in handlers)
     assert any(isinstance(h, MessageHandler) for h in handlers)
     assert sorted(job.name for job in app.job_queue.jobs()) == [
@@ -70,3 +70,11 @@ def test_the_telegram_menu_only_offers_registered_commands(settings):
 
     assert {entry.command for entry in bot_module.MENU} <= registered
     assert all(entry.description for entry in bot_module.MENU)
+
+
+def test_the_new_callback_patterns_are_registered(settings):
+    secrets = Secrets(telegram_bot_token="123:fake", telegram_user_id=42, database_url="postgresql://unused")
+    handlers = build_application(settings, secrets, USERS).handlers[0]
+    patterns = [h.pattern.pattern for h in handlers if isinstance(h, CallbackQueryHandler)]
+    assert any(pattern.startswith("^gap:") for pattern in patterns)
+    assert any(pattern.startswith("^ok:") for pattern in patterns)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,10 +26,14 @@ from telegram.ext import (
 
 from . import db, messages, session, tts
 from .config import Secrets, Settings, settings_for
+from .grading import Grade
 from .models import CardView, User
 from .srs import build_scheduler
 
 log = logging.getLogger(__name__)
+
+GAP_PREFIX = "gap"
+OVERRIDE_PREFIX = "ok"
 
 
 @dataclass(frozen=True)
@@ -96,13 +101,44 @@ async def send_with_voice(
         log.warning("could not store the file_id of item %s", card.item_id, exc_info=True)
 
 
+def gap_markup(card: CardView) -> InlineKeyboardMarkup:
+    """One button per choice, shuffled so the position is not what gets learned.
+
+    The callback data carries the index into the theme's own list, so a shuffled layout
+    never changes what a button means.
+    """
+    buttons = [
+        InlineKeyboardButton(choice, callback_data=f"{GAP_PREFIX}:{card.card_id}:{index}")
+        for index, choice in enumerate(card.choices)
+    ]
+    random.shuffle(buttons)
+    rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
+    return InlineKeyboardMarkup(rows)
+
+
+def choice_from_callback(card: CardView, data: str) -> str | None:
+    """The choice a `gap:<card_id>:<index>` callback points at, or None when it does not fit."""
+    _prefix, _card_id, index = data.split(":")
+    if not index.isdigit() or int(index) >= len(card.choices):
+        return None
+    return card.choices[int(index)]
+
+
 async def send_question(
     bot: Bot, chat_id: int, conn: psycopg.Connection, card: CardView, settings: Settings
 ) -> None:
-    """Ask the question. With FR->NL the French word sounds underneath it: that word is
-    the question. With NL->FR it does not - there Niels has to produce it himself."""
+    """Ask the question. The French sounds wherever it is the question itself: with FR->NL and
+    with a sentence to translate. With NL->FR and with a gap to fill it would give the answer away."""
     text = messages.prompt(card)
-    if settings.tts.enabled and card.direction == "fr_nl":
+    if card.direction == "gap":
+        if not card.choices:
+            # Hand-edited row: a gap card without choices has no answerable question. Skipping it
+            # leaves it unasked and due, which is recoverable; sending it would strand the batch.
+            log.error("grammar card %s has no choices, skipping it", card.card_id)
+            return
+        await send(bot, chat_id, text, gap_markup(card))
+        return
+    if settings.tts.enabled and card.direction in ("fr_nl", "translate"):
         await send_with_voice(bot, chat_id, conn, card, text, settings)
     else:
         await send(bot, chat_id, text)
@@ -111,13 +147,25 @@ async def send_question(
 async def send_feedback(
     bot: Bot, chat_id: int, conn: psycopg.Connection, answered: session.Answered, settings: Settings
 ) -> None:
-    """Show the verdict. With NL->FR the French word sounds with it: that is where the
-    right French word first appears, so that is where the pronunciation belongs."""
-    text = messages.feedback(answered.result, answered.card)
-    if settings.tts.enabled and answered.card.direction == "nl_fr":
-        await send_with_voice(bot, chat_id, conn, answered.card, text, settings)
+    """Show the verdict. The French sounds where the right French first appears: after an
+    NL->FR answer, and with the completed sentence of a gap card."""
+    card = answered.card
+    if card.direction == "gap":
+        text = messages.gap_feedback(answered.result.grade is Grade.CORRECT, card)
     else:
-        await send(bot, chat_id, text)
+        text = messages.feedback(answered.result, card)
+    markup = None
+    if card.direction == "translate" and answered.result.grade is Grade.WRONG:
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(messages.BUTTON_OVERRIDE,
+                                   callback_data=f"{OVERRIDE_PREFIX}:{answered.review_id}")]]
+        )
+    if settings.tts.enabled and card.direction in ("nl_fr", "gap"):
+        await send_with_voice(bot, chat_id, conn, card, text, settings)
+        if markup is not None:  # a voice memo cannot carry a keyboard
+            await send(bot, chat_id, messages.override_hint(), markup)
+        return
+    await send(bot, chat_id, text, markup)
 
 
 async def nudge_others(
@@ -217,6 +265,85 @@ async def on_intro_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         log.warning("could not remove the intro button", exc_info=True)
 
 
+async def on_gap_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    now = utcnow()
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is None:
+                await query.answer()
+                return
+            settings = settings_for(deps.settings, user)
+            state = db.get_bot_state(conn, user_id=user.id)
+            card_id = int(query.data.split(":")[1])
+            card = db.get_card(conn, card_id, user_id=user.id) if state.pending_card_id == card_id else None
+            choice = choice_from_callback(card, query.data) if card else None
+            if choice is None:
+                await query.answer(messages.stale_intro())
+                return
+            await query.answer()
+            answered = session.answer_choice(conn, settings, deps.scheduler, choice, now, user_id=user.id)
+            if answered is None:
+                return
+            await send_feedback(context.bot, chat_id, conn, answered, settings)
+            await send_step(context.bot, chat_id, conn, answered.next, now, settings, user.id)
+            if answered.goal_just_reached:
+                await nudge_others(context.bot, conn, user, deps.settings, now)
+    except psycopg.Error:
+        log.exception("database unavailable on a gap button")
+        await query.answer()
+        await send(context.bot, chat_id, messages.database_unavailable())
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        log.warning("could not remove the gap buttons", exc_info=True)
+
+
+async def on_override_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    query = update.callback_query
+    review_id = int(query.data.split(":")[1])
+    now = utcnow()
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is None:
+                await query.answer()
+                return
+            settings = settings_for(deps.settings, user)
+            card = session.override(conn, settings, deps.scheduler, review_id, now, user_id=user.id)
+            await query.answer(messages.override_applied() if card else messages.override_refused())
+    except psycopg.Error:
+        log.exception("database unavailable on the override button")
+        await query.answer()
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        log.warning("could not remove the override button", exc_info=True)
+
+
+async def on_grammar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    chat_id = update.effective_chat.id
+    now = utcnow()
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is None:
+                return
+            settings = settings_for(deps.settings, user)
+            step = session.start_batch(conn, settings, user.id, now, kind="grammar")
+            await send_step(context.bot, chat_id, conn, step, now, settings, user.id)
+    except psycopg.Error:
+        log.exception("database unavailable in /grammar")
+        await send(context.bot, chat_id, messages.database_unavailable())
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     deps = deps_of(context)
     chat_id = update.effective_chat.id
@@ -298,6 +425,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 # you have to know about first.
 MENU = [
     BotCommand("practice", "Oefen nu een setje"),
+    BotCommand("grammar", "Oefen alleen de zinnen"),
     BotCommand("stand", "Hoe staan jullie er deze week voor"),
     BotCommand("volgorde", "Welke onderwerpen komen eraan"),
     BotCommand("help", "Hoe werkt deze bot?"),
@@ -368,10 +496,13 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
     known = filters.User(user_id=[u.telegram_user_id for u in users]) & filters.UpdateType.MESSAGE
     app.add_handler(CommandHandler("start", on_start, filters=known))
     app.add_handler(CommandHandler("practice", on_practice, filters=known))
+    app.add_handler(CommandHandler("grammar", on_grammar, filters=known))
     app.add_handler(CommandHandler("stand", on_standings, filters=known))
     app.add_handler(CommandHandler("volgorde", on_order, filters=known))
     app.add_handler(CommandHandler("help", on_help, filters=known))
     app.add_handler(CallbackQueryHandler(on_intro_pressed, pattern=r"^intro:\d+$"))
+    app.add_handler(CallbackQueryHandler(on_gap_pressed, pattern=r"^gap:\d+:\d+$"))
+    app.add_handler(CallbackQueryHandler(on_override_pressed, pattern=r"^ok:\d+$"))
     app.add_handler(MessageHandler(known & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
     return app

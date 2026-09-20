@@ -19,6 +19,15 @@ CARD = CardView(
     card_id=5, item_id=1, direction="fr_nl", french=["le chien"], dutch=["de hond"],
     gender=None, hint=None, introduced_at=NOW, srs=None,
 )
+GAP_CARD = CardView(
+    card_id=7, item_id=2, direction="gap",
+    french=["Je prends le vélo pour aller au travail."],
+    dutch=["Ik neem de fiets om naar mijn werk te gaan"],
+    gender=None, hint=None, introduced_at=NOW, srs=None,
+    kind="grammar", sentence="Je prends le vélo ___ aller au travail.",
+    gap_answer="pour", rule="pour + infinitief = doel",
+    choices=["pour", "parce que", "mais", "avec", "sans"],
+)
 
 
 def make_context(settings):
@@ -278,3 +287,91 @@ def test_a_goal_crossing_answer_nudges_the_others(conn, settings, user, add_item
     asyncio.run(bot.on_text(update, make_context(settings)))
 
     assert [u.id for u in nudged] == [user.id]
+
+
+def test_gap_question_carries_one_button_per_choice(settings, monkeypatch):
+    def fail(text, tts_settings):
+        raise AssertionError("a sentence with a hole in it must not be read out loud")
+
+    monkeypatch.setattr(bot.tts, "synthesize", fail)
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.send_question(telegram_bot, 42, object(), GAP_CARD, enable_tts(settings)))
+
+    telegram_bot.send_voice.assert_not_awaited()
+    markup = telegram_bot.send_message.await_args.kwargs["reply_markup"]
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert sorted(button.text for button in buttons) == sorted(GAP_CARD.choices)
+    assert all(button.callback_data.startswith(f"gap:{GAP_CARD.card_id}:") for button in buttons)
+
+
+def test_the_callback_data_survives_the_shuffle(settings):
+    markup = bot.gap_markup(GAP_CARD)
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    for button in buttons:
+        assert bot.choice_from_callback(GAP_CARD, button.callback_data) == button.text
+    assert bot.choice_from_callback(GAP_CARD, f"gap:{GAP_CARD.card_id}:99") is None
+
+
+def test_gap_feedback_speaks_the_completed_sentence(settings, monkeypatch):
+    spoken = []
+    monkeypatch.setattr(bot.tts, "synthesize", lambda text, s: spoken.append(text) or b"OggS-fake")
+    monkeypatch.setattr(bot.db, "save_voice", lambda conn, **kwargs: None)
+    answered = session.Answered(
+        result=GradeResult(grade=Grade.CORRECT, reason="exact", expected="pour"),
+        card=GAP_CARD,
+        next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
+    )
+    telegram_bot = AsyncMock()
+    telegram_bot.send_voice.return_value.voice.file_id = "AwACAgQAAxk"
+
+    asyncio.run(bot.send_feedback(telegram_bot, 42, object(), answered, enable_tts(settings)))
+
+    assert spoken == ["Je prends le vélo pour aller au travail."]
+
+
+def test_a_wrong_translation_offers_the_override_button(settings):
+    translate = replace(GAP_CARD, direction="translate", card_id=8)
+    answered = session.Answered(
+        result=GradeResult(grade=Grade.WRONG, reason="wrong",
+                           expected="Ik neem de fiets om naar mijn werk te gaan"),
+        card=translate,
+        next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
+        review_id=123,
+    )
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.send_feedback(telegram_bot, 42, object(), answered, settings))
+
+    markup = telegram_bot.send_message.await_args.kwargs["reply_markup"]
+    button = markup.inline_keyboard[0][0]
+    assert (button.text, button.callback_data) == (messages.BUTTON_OVERRIDE, "ok:123")
+
+
+def test_a_correct_translation_has_no_override_button(settings):
+    translate = replace(GAP_CARD, direction="translate", card_id=8)
+    answered = session.Answered(
+        result=GradeResult(grade=Grade.CORRECT, reason="exact",
+                           expected="Ik neem de fiets om naar mijn werk te gaan"),
+        card=translate,
+        next=session.Summary(done_today=1, goal=10, due_now=0, streak=0, more_available=False),
+        goal_just_reached=False,
+        review_id=123,
+    )
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.send_feedback(telegram_bot, 42, object(), answered, settings))
+
+    assert telegram_bot.send_message.await_args.kwargs["reply_markup"] is None
+
+
+def test_a_grammar_card_without_choices_is_not_asked(settings, caplog):
+    broken = replace(GAP_CARD, choices=[])
+    telegram_bot = AsyncMock()
+
+    asyncio.run(bot.send_question(telegram_bot, 42, object(), broken, settings))
+
+    telegram_bot.send_message.assert_not_awaited()
+    assert "choices" in caplog.text

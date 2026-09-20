@@ -176,3 +176,4 @@ def test_override_texts():
     assert "goed" in messages.BUTTON_OVERRIDE.lower()
     assert messages.override_applied()
     assert messages.override_refused()
+    assert messages.override_hint()
