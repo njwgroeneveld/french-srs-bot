@@ -1,13 +1,8 @@
 import psycopg
 import pytest
 
-from french_srs_bot import __main__ as entry, db
-
-
-def all_migrations():
-    """Every migration on disk, in the order the runner applies them. Derived rather than
-    listed, so adding a migration does not break these tests."""
-    return sorted(path.stem for path in db.MIGRATIONS_DIR.glob("*.sql"))
+from conftest import all_migrations
+from french_srs_bot import __main__ as entry
 
 
 def test_migrate_with_retries_returns_applied_versions(conn, monkeypatch):

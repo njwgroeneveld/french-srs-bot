@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+from conftest import all_migrations
 from french_srs_bot import db
 from french_srs_bot.models import SrsState
 
@@ -26,13 +27,9 @@ def make_due(conn, card_id, *, introduced_at, due):
 
 
 def test_migrations_are_idempotent(conn):
-    # Derived from disk rather than listed, so adding a migration does not break this test.
-    on_disk = sorted(path.stem for path in db.MIGRATIONS_DIR.glob("*.sql"))
-
     assert db.run_migrations(conn) == []
-
     versions = [r["version"] for r in conn.execute("SELECT version FROM french.schema_migrations")]
-    assert sorted(versions) == on_disk
+    assert versions == all_migrations()
 
 
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, user, add_items):

@@ -13,6 +13,13 @@ from french_srs_bot.models import User
 
 load_dotenv()
 
+
+def all_migrations():
+    """Every migration on disk, in the order the runner applies them. Derived rather than
+    listed, so adding a migration does not break these tests."""
+    return sorted(path.stem for path in db.MIGRATIONS_DIR.glob("*.sql"))
+
+
 USERS = [
     User(id=1, telegram_user_id=42, name="Niels"),
     User(id=2, telegram_user_id=99, name="Inga"),

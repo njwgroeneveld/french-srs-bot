@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
-Direction = Literal["fr_nl", "nl_fr"]
+Direction = Literal["fr_nl", "nl_fr", "gap", "translate"]
+Kind = Literal["vocab", "grammar"]
+
+# Per item kind: the card that is introduced first, and the one that follows a day later.
+PRIMARY: dict[str, str] = {"vocab": "fr_nl", "grammar": "gap"}
+SECONDARY: dict[str, str] = {"vocab": "nl_fr", "grammar": "translate"}
 
 
 @dataclass(frozen=True)
@@ -43,18 +48,34 @@ class CardView:
     srs: SrsState | None  # None until the card has been reviewed once
     voice_file_id: str | None = None  # Telegram's handle for the French audio of this item
     voice_key: str | None = None  # voice+tempo that audio was made with
+    kind: Kind = "vocab"
+    sentence: str | None = None  # grammar: the sentence with the ___ gap
+    gap_answer: str | None = None  # grammar: what belongs in the gap
+    rule: str | None = None  # grammar: one line of explanation, shown with the feedback
+    choices: list[str] = field(default_factory=list)  # grammar: the buttons of its theme
 
     @property
     def question(self) -> str:
-        return self.french[0] if self.direction == "fr_nl" else self.dutch[0]
+        if self.direction == "gap":
+            return self.sentence
+        if self.direction in ("fr_nl", "translate"):
+            return self.french[0]
+        return self.dutch[0]
 
     @property
     def accepted(self) -> list[str]:
-        return self.dutch if self.direction == "fr_nl" else self.french
+        if self.direction == "gap":
+            return [self.gap_answer]
+        return self.dutch if self.direction in ("fr_nl", "translate") else self.french
 
     @property
     def answer_lang(self) -> Literal["fr", "nl"]:
-        return "nl" if self.direction == "fr_nl" else "fr"
+        return "fr" if self.direction in ("nl_fr", "gap") else "nl"
+
+    @property
+    def is_primary(self) -> bool:
+        """The first card of its item: shown before the other one, on an earlier day."""
+        return self.direction == PRIMARY[self.kind]
 
 
 @dataclass(frozen=True)
