@@ -255,6 +255,22 @@ async def on_standings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await send(context.bot, chat_id, messages.standings(rows))
 
 
+async def on_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    chat_id = update.effective_chat.id
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is None:
+                return
+            themes = db.theme_progress(conn, user_id=user.id)
+    except psycopg.Error:
+        log.exception("database unavailable in /volgorde")
+        await send(context.bot, chat_id, messages.database_unavailable())
+        return
+    await send(context.bot, chat_id, messages.study_order(themes))
+
+
 async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     deps = deps_of(context)
     settings = deps.settings
@@ -283,6 +299,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 MENU = [
     BotCommand("practice", "Oefen nu een setje"),
     BotCommand("stand", "Hoe staan jullie er deze week voor"),
+    BotCommand("volgorde", "Welke onderwerpen komen eraan"),
     BotCommand("help", "Hoe werkt deze bot?"),
 ]
 
@@ -293,6 +310,38 @@ async def publish_menu(app: Application) -> None:
         await app.bot.set_my_commands(MENU)
     except TelegramError:
         log.warning("could not publish the command menu", exc_info=True)
+
+
+async def send_announcements(app: Application) -> None:
+    """Push short release notes once to everyone who has not received them yet.
+
+    Runs on every start, but only sends what is new: a plain redeploy stays silent. One
+    unreachable person must not stop the others, so each user is handled on their own.
+    """
+    deps = app.bot_data["deps"]
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            for user in db.all_users(conn):
+                pending = messages.unseen_announcements(user.last_announcement)
+                if not pending:
+                    continue
+                try:
+                    for _number, text in pending:
+                        await send(app.bot, user.telegram_user_id, text)
+                except TelegramError:
+                    log.warning("could not reach %s with the release notes", user.name, exc_info=True)
+                    continue
+                db.mark_announcement_seen(
+                    conn, user_id=user.id, announcement_id=pending[-1][0]
+                )
+                log.info("sent %s release note(s) to %s", len(pending), user.name)
+    except psycopg.Error:
+        log.warning("database unavailable, release notes wait for the next start", exc_info=True)
+
+
+async def on_startup(app: Application) -> None:
+    await publish_menu(app)
+    await send_announcements(app)
 
 
 def build_application(settings: Settings, secrets: Secrets, users: Sequence[User]) -> Application:
@@ -307,7 +356,7 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
         .pool_timeout(30)
         .get_updates_connect_timeout(30)
         .get_updates_read_timeout(40)
-        .post_init(publish_menu)
+        .post_init(on_startup)
         .build()
     )
     app.bot_data["deps"] = Deps(
@@ -320,6 +369,7 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
     app.add_handler(CommandHandler("start", on_start, filters=known))
     app.add_handler(CommandHandler("practice", on_practice, filters=known))
     app.add_handler(CommandHandler("stand", on_standings, filters=known))
+    app.add_handler(CommandHandler("volgorde", on_order, filters=known))
     app.add_handler(CommandHandler("help", on_help, filters=known))
     app.add_handler(CallbackQueryHandler(on_intro_pressed, pattern=r"^intro:\d+$"))
     app.add_handler(MessageHandler(known & filters.TEXT & ~filters.COMMAND, on_text))

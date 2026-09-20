@@ -8,7 +8,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
-from .models import BotState, CardView, DayStats, SrsState, User
+from .models import BotState, CardView, DayStats, SrsState, ThemeProgress, User
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 
@@ -56,7 +56,7 @@ def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -
 
 # --- users ---------------------------------------------------------------------------------
 
-_USER_COLUMNS = "id, telegram_user_id, name, daily_goal, daily_new, batch_size"
+_USER_COLUMNS = "id, telegram_user_id, name, daily_goal, daily_new, batch_size, last_announcement"
 
 
 def _user_from_row(row: dict) -> User:
@@ -67,6 +67,7 @@ def _user_from_row(row: dict) -> User:
         daily_goal=row["daily_goal"],
         daily_new=row["daily_new"],
         batch_size=row["batch_size"],
+        last_announcement=row["last_announcement"],
     )
 
 
@@ -101,6 +102,17 @@ def user_by_telegram_id(conn: psycopg.Connection, telegram_user_id: int) -> User
         (telegram_user_id,),
     ).fetchone()
     return _user_from_row(row) if row else None
+
+
+def mark_announcement_seen(conn: psycopg.Connection, *, user_id: int, announcement_id: int) -> None:
+    """Record that this user has received everything up to `announcement_id`.
+
+    Never moves backwards: an older id arriving late must not make a user eligible again.
+    """
+    conn.execute(
+        "UPDATE french.users SET last_announcement = %s WHERE id = %s AND last_announcement < %s",
+        (announcement_id, user_id, announcement_id),
+    )
 
 
 def sync_cards(conn: psycopg.Connection) -> int:
@@ -347,6 +359,29 @@ def save_review(
 
 
 # --- statistics ----------------------------------------------------------------------------
+
+
+def theme_progress(conn: psycopg.Connection, *, user_id: int) -> list[ThemeProgress]:
+    """Every theme in the order new cards are drawn from it, with this user's progress."""
+    rows = conn.execute(
+        """
+        SELECT t.position, t.name, count(c.id) AS cards,
+               count(*) FILTER (WHERE c.introduced_at IS NOT NULL) AS started
+        FROM french.themes t
+        JOIN french.items i ON i.theme_id = t.id
+        JOIN french.cards c ON c.item_id = i.id AND c.user_id = %(user)s
+        GROUP BY t.id, t.position, t.name
+        ORDER BY t.position
+        """,
+        {"user": user_id},
+    ).fetchall()
+    return [
+        ThemeProgress(
+            position=row["position"], name=row["name"], cards=row["cards"], started=row["started"]
+        )
+        for row in rows
+    ]
+
 
 
 def day_stats(

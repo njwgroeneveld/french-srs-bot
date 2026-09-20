@@ -7,10 +7,30 @@ from datetime import time
 from html import escape
 
 from .grading import GradeResult
-from .models import CardView, DayStats
+from .models import CardView, DayStats, ThemeProgress
 from .session import Standing
 
 BUTTON_UNDERSTOOD = "👍 Begrepen"
+
+# Short release notes, pushed once to everyone who has not seen them. Numbers only go up:
+# add one at the bottom and it goes out on the next start. Nothing is ever sent twice,
+# because each user's highest received number is stored.
+ANNOUNCEMENTS: tuple[tuple[int, str], ...] = (
+    (
+        1,
+        "🆕 <b>Nieuw in de bot</b>\n\n"
+        "<b>/volgorde</b> — welke onderwerpen eraan komen en waar je nu bent. "
+        "Nieuwe woorden komen van boven naar beneden: eerst je boek, dan de werkwoorden, "
+        "dan de woordenlijsten.\n\n"
+        "<b>/help</b> — hoe alles werkt: de setjes, wat de tekens betekenen, en waarom "
+        "accenten wel meetellen en hoofdletters niet.\n\n"
+        "Typ <b>/</b> in de chat voor het hele menu.",
+    ),
+)
+
+
+def unseen_announcements(last_seen: int) -> list[tuple[int, str]]:
+    return [(number, text) for number, text in ANNOUNCEMENTS if number > last_seen]
 
 _FLAGS = {"fr_nl": "🇫🇷 → 🇳🇱", "nl_fr": "🇳🇱 → 🇫🇷"}
 _GENDER = {"m": "mannelijk", "f": "vrouwelijk"}
@@ -58,6 +78,27 @@ def help_text(batch_times: Sequence[time], goal: int) -> str:
         "Bij 🇫🇷 → 🇳🇱 hoor je het Franse woord meteen. Bij 🇳🇱 → 🇫🇷 moet je het zelf bedenken, "
         "dus dat krijg je pas te horen nadat je geantwoord hebt."
     )
+
+
+def study_order(themes: Sequence[ThemeProgress]) -> str:
+    """The themes in the order new words are drawn from them, and how far along you are."""
+    if not themes:
+        return "Er staan nog geen woorden in de database."
+    lines = ["📋 <b>Oefenvolgorde</b>", ""]
+    for theme in themes:
+        if theme.started == theme.cards:
+            mark = "✅"
+        elif theme.started:
+            mark = "▶️"
+        else:
+            mark = "⬜"
+        lines.append(f"{mark} {escape(theme.name)} — {theme.started}/{theme.cards}")
+    lines.append("")
+    lines.append(
+        "<i>Nieuwe woorden komen van boven naar beneden. Herhalingen lopen daar dwars "
+        "doorheen: die gaan altijd voor.</i>"
+    )
+    return "\n".join(lines)
 
 
 def intro(card: CardView) -> str:

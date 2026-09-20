@@ -27,6 +27,7 @@ class User:
     daily_goal: int | None = None  # None: follow the shared value from settings.yaml
     daily_new: int | None = None
     batch_size: int | None = None
+    last_announcement: int = 0  # highest release note this user has received
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,16 @@ class CardView:
     @property
     def answer_lang(self) -> Literal["fr", "nl"]:
         return "nl" if self.direction == "fr_nl" else "fr"
+
+
+@dataclass(frozen=True)
+class ThemeProgress:
+    """How far one user is into one theme, for the study-order overview."""
+
+    position: int
+    name: str
+    cards: int
+    started: int  # cards that have been introduced; the rest is still ahead
 
 
 @dataclass(frozen=True)

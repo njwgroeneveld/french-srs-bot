@@ -26,9 +26,13 @@ def make_due(conn, card_id, *, introduced_at, due):
 
 
 def test_migrations_are_idempotent(conn):
+    # Derived from disk rather than listed, so adding a migration does not break this test.
+    on_disk = sorted(path.stem for path in db.MIGRATIONS_DIR.glob("*.sql"))
+
     assert db.run_migrations(conn) == []
+
     versions = [r["version"] for r in conn.execute("SELECT version FROM french.schema_migrations")]
-    assert versions == ["001_initial", "002_theme_lesson", "003_voice", "004_users"]
+    assert sorted(versions) == on_disk
 
 
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, user, add_items):
@@ -266,3 +270,36 @@ def test_the_pending_question_is_per_user(conn, add_items):
 
     assert db.get_bot_state(conn, user_id=niels.id).pending_card_id == card.card_id
     assert db.get_bot_state(conn, user_id=inga.id).pending_card_id is None
+
+
+def test_theme_progress_counts_only_this_users_cards(conn, add_items):
+    niels, inga = two_users(conn)
+    items = add_items([("à pied", "te voet"), ("à vélo", "met de fiets")])
+    db.introduce_card(
+        conn, card_ids_for(conn, items[0], niels.id)["fr_nl"], NOW, user_id=niels.id
+    )
+
+    for_niels = db.theme_progress(conn, user_id=niels.id)
+    for_inga = db.theme_progress(conn, user_id=inga.id)
+
+    assert [(t.cards, t.started) for t in for_niels] == [(4, 1)]
+    assert [(t.cards, t.started) for t in for_inga] == [(4, 0)]
+
+
+def card_ids_for(conn, item_id, user_id):
+    rows = conn.execute(
+        "SELECT direction, id FROM french.cards WHERE item_id = %s AND user_id = %s",
+        (item_id, user_id),
+    ).fetchall()
+    return {row["direction"]: row["id"] for row in rows}
+
+
+def test_marking_an_announcement_seen_never_goes_backwards(conn):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    (user,) = db.all_users(conn)
+    assert user.last_announcement == 0
+
+    db.mark_announcement_seen(conn, user_id=user.id, announcement_id=3)
+    db.mark_announcement_seen(conn, user_id=user.id, announcement_id=1)
+
+    assert db.all_users(conn)[0].last_announcement == 3

@@ -2,7 +2,7 @@ from datetime import time
 
 from french_srs_bot import messages, session
 from french_srs_bot.grading import Grade, GradeResult
-from french_srs_bot.models import CardView, DayStats
+from french_srs_bot.models import CardView, DayStats, ThemeProgress
 
 
 def make_card(direction="fr_nl", gender="f", hint=None):
@@ -97,3 +97,34 @@ def test_help_lists_every_command_and_the_personal_goal():
     assert "/practice" in text and "/stand" in text and "/help" in text
     assert "08:00" in text and "19:00" in text
     assert "30 kaarten" in text
+
+
+def test_announcement_numbers_only_go_up_and_are_unique():
+    numbers = [number for number, _text in messages.ANNOUNCEMENTS]
+
+    assert numbers == sorted(set(numbers))
+
+
+def test_only_announcements_above_the_last_seen_one_are_offered():
+    highest = max(number for number, _text in messages.ANNOUNCEMENTS)
+
+    assert messages.unseen_announcements(0) == list(messages.ANNOUNCEMENTS)
+    assert messages.unseen_announcements(highest) == []
+
+
+def test_study_order_marks_where_you_are():
+    themes = [
+        ThemeProgress(position=1, name="Transport", cards=24, started=24),
+        ThemeProgress(position=2, name="Se déplacer", cards=40, started=7),
+        ThemeProgress(position=3, name="Nombres", cards=20, started=0),
+    ]
+
+    text = messages.study_order(themes)
+
+    assert "✅ Transport — 24/24" in text
+    assert "▶️ Se déplacer — 7/40" in text
+    assert "⬜ Nombres — 0/20" in text
+
+
+def test_study_order_survives_an_empty_database():
+    assert messages.study_order([]) != ""
