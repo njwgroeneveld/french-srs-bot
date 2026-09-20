@@ -68,14 +68,19 @@ def _eligible_now(
     now: datetime,
     kind: str | None = None,
 ) -> tuple[list[CardView], CardView | None]:
-    """Due cards and the new card allowed right now (None when the new-card allowance is used up)."""
+    """Due cards and the new card allowed right now (None when the new-card allowance is used up).
+
+    Asking for one kind (/grammar) sets `kind` and lifts that allowance: a day spent on words
+    would otherwise leave the sentences unreachable until tomorrow, which reads as "there is
+    no grammar" rather than "not today".
+    """
     start, end = day_bounds(now, settings.timezone)
     stats = db.day_stats(conn, user_id=user_id, day_start=start, day_end=end)
     due = db.due_cards(conn, user_id=user_id, now=now, day_start=start, kind=kind)
     new_allowed = max(settings.daily_new, settings.daily_goal - (stats.reviews + len(due)))
     new_card = (
         db.next_new_card(conn, user_id=user_id, now=now, day_start=start, kind=kind)
-        if stats.new < new_allowed
+        if kind is not None or stats.new < new_allowed
         else None
     )
     return due, new_card

@@ -4,6 +4,7 @@ import pytest
 
 from french_srs_bot import db, session
 from french_srs_bot.grading import Grade
+from french_srs_bot.models import SrsState
 from french_srs_bot.srs import build_scheduler
 from test_db import card_ids
 
@@ -460,3 +461,39 @@ def test_override_is_refused_after_a_newer_review(conn, settings, scheduler, use
 
     assert second.review_id != first.review_id
     assert session.override(conn, settings, scheduler, first.review_id, MORNING, user_id=user.id) is None
+
+
+def test_grammar_ignores_the_daily_new_card_limit(conn, settings, user, add_items, add_grammar):
+    """Asking for grammar explicitly beats the daily cap on new cards.
+
+    Reproduces what happened in production: a day full of new words left /grammar saying
+    there were no sentences, while twenty of them were waiting to be started.
+    """
+    words = add_items([(f"mot {n}", f"woord {n}") for n in range(1, 12)],
+                      theme_ref="theme/v1", theme_position=1)
+    add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])],
+                theme_ref="theme/g1", theme_position=2)
+    # Spend the whole daily allowance on words: introduced *and* answered, so they are done
+    # for today rather than still due.
+    day_start = session.day_bounds(MORNING, settings.timezone)[0]
+    for item_id in words:
+        card = db.get_card(conn, card_id(conn, item_id, "fr_nl", user.id), user_id=user.id)
+        db.introduce_card(conn, card.card_id, MORNING, user_id=user.id)
+        db.save_review(
+            conn, card_id=card.card_id, answer="woord", grade="correct", rating=3,
+            due_before=None, prev_state=None,
+            new_state=SrsState(fsrs_state=1, step=1, stability=2.0, difficulty=5.0,
+                               due=MORNING + timedelta(days=1), last_review=MORNING),
+            now=MORNING, user_id=user.id,
+        )
+    stats = db.day_stats(conn, user_id=user.id, day_start=day_start,
+                         day_end=day_start + timedelta(days=1))
+    assert stats.new >= settings.daily_goal  # the allowance is really used up
+
+    # A mixed batch has no new card left to give...
+    _due, mixed_new = session._eligible_now(conn, settings, user.id, MORNING)
+    assert mixed_new is None
+    # ...but /grammar still starts the sentences.
+    step = session.start_batch(conn, settings, user.id, MORNING, kind="grammar")
+    assert isinstance(step, session.Ask)
+    assert step.card.kind == "grammar" and step.card.direction == "gap"
