@@ -18,6 +18,9 @@ class ThemeItem:
     english: str | None = None
     gender: str | None = None
     hint: str | None = None
+    sentence: str | None = None  # grammar: the sentence with the ___ gap
+    gap_answer: str | None = None  # grammar: what belongs in the gap
+    rule: str | None = None  # grammar: one line of explanation
 
 
 @dataclass
@@ -28,6 +31,8 @@ class ThemeFile:
     name: str
     position: int
     lesson: str | None = None  # e.g. the Obsidian lesson note this theme comes from
+    kind: str = "vocab"  # vocab or grammar
+    choices: list[str] = field(default_factory=list)  # grammar: the buttons of this theme
     items: list[ThemeItem] = field(default_factory=list)
 
 
@@ -51,9 +56,26 @@ def read_theme_file(path: Path) -> ThemeFile:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw.get("lesson"), (str, type(None))):
         raise ValueError(f"{path}: lesson must be a string or null, got {raw['lesson']!r}")
+    kind = raw.get("kind", "vocab")
+    if kind not in ("vocab", "grammar"):
+        raise ValueError(f"{path}: kind must be vocab or grammar, got {kind!r}")
+    choices = raw.get("choices") or []
+    if kind == "grammar" and not (_is_answer_list(choices) and len(choices) >= 2):
+        raise ValueError(f"{path}: a grammar theme needs choices: a list of at least two strings")
+    if kind == "vocab" and choices:
+        raise ValueError(f"{path}: choices belong to a grammar theme, not to a vocab one")
     items = []
     seen: set[str] = set()
     for number, item in enumerate(raw["items"], start=1):
+        if kind == "grammar":
+            sentence, gap = item.get("sentence"), item.get("gap", item.get("gap_answer"))
+            if not isinstance(sentence, str) or sentence.count("___") != 1:
+                raise ValueError(
+                    f"{path}: item {number} needs a sentence with exactly one ___ gap, got {sentence!r}"
+                )
+            if gap not in choices:
+                raise ValueError(f"{path}: item {number} gap {gap!r} must be one of choices")
+            item = {**item, "french": [sentence.replace("___", gap)]}
         french, dutch = item.get("french"), item.get("dutch")
         for key, value in (("french", french), ("dutch", dutch)):
             if not _is_answer_list(value):
@@ -76,6 +98,9 @@ def read_theme_file(path: Path) -> ThemeFile:
                 english=item.get("english"),
                 gender=item.get("gender"),
                 hint=item.get("hint") or None,
+                sentence=item.get("sentence"),
+                gap_answer=item.get("gap", item.get("gap_answer")),
+                rule=item.get("rule"),
             )
         )
     return ThemeFile(
@@ -85,6 +110,8 @@ def read_theme_file(path: Path) -> ThemeFile:
         name=raw["name"],
         position=int(raw["position"]),
         lesson=raw.get("lesson"),
+        kind=kind,
+        choices=list(choices),
         items=items,
     )
 
@@ -103,6 +130,7 @@ def load_theme(conn: psycopg.Connection, theme: ThemeFile) -> LoadResult:
             name=theme.name,
             position=theme.position,
             lesson=theme.lesson,
+            choices=theme.choices or None,
         )
         for position, item in enumerate(theme.items, start=1):
             db.upsert_item(
@@ -114,6 +142,10 @@ def load_theme(conn: psycopg.Connection, theme: ThemeFile) -> LoadResult:
                 english=item.english,
                 gender=item.gender,
                 hint=item.hint,
+                kind=theme.kind,
+                sentence=item.sentence,
+                gap_answer=item.gap_answer,
+                rule=item.rule,
             )
         rows = conn.execute(
             "SELECT french[1] AS french FROM french.items WHERE theme_id = %s AND NOT (french[1] = ANY(%s))"

@@ -13,6 +13,16 @@ from french_srs_bot.importer.theme_file import load_theme, read_theme_file, writ
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+
+def read_theme_file_from_text(text, tmp_dir=None):
+    import tempfile
+
+    directory = tmp_dir or tempfile.mkdtemp()
+    path = Path(directory) / "theme.yaml"
+    path.write_text(text, encoding="utf-8")
+    return read_theme_file(path)
+
+
 # Self-written HTML with the same structure as a kwiziq theme page (not a copy of kwiziq content).
 THEME_HTML = """
 <html><body>
@@ -226,3 +236,78 @@ def test_fetch_refuses_to_overwrite_existing_file(tmp_path, monkeypatch):
         importer_cli.cmd_fetch(args)
     assert "--force" in str(info.value.code)
     assert target.read_text(encoding="utf-8") == "reviewed"
+
+
+GRAMMAR_YAML = """
+source: obsidian
+source_ref: Frans/Grammaire/Connecteurs.md
+level: A1.1
+name: A1.1 U4 · Connecteurs
+position: 4
+lesson: Frans/Lessen/2026-W38 A1.1 U4 Transport
+kind: grammar
+choices: [pour, parce que, mais]
+items:
+  - sentence: Je prends le vélo ___ aller au travail.
+    gap: pour
+    dutch: [Ik neem de fiets om naar mijn werk te gaan]
+    rule: pour + infinitief = doel
+"""
+
+
+def test_grammar_file_derives_the_completed_sentence(tmp_path):
+    path = tmp_path / "grammar.yaml"
+    path.write_text(GRAMMAR_YAML, encoding="utf-8")
+    theme = read_theme_file(path)
+    assert theme.kind == "grammar"
+    assert theme.choices == ["pour", "parce que", "mais"]
+    item = theme.items[0]
+    assert item.french == ["Je prends le vélo pour aller au travail."]
+    assert item.sentence == "Je prends le vélo ___ aller au travail."
+    assert item.gap_answer == "pour"
+    assert item.rule == "pour + infinitief = doel"
+
+
+def test_grammar_file_round_trips(tmp_path):
+    path = tmp_path / "grammar.yaml"
+    path.write_text(GRAMMAR_YAML, encoding="utf-8")
+    theme = read_theme_file(path)
+    target = tmp_path / "copy.yaml"
+    write_theme_file(target, theme)
+    assert read_theme_file(target) == theme
+
+
+@pytest.mark.parametrize(
+    "broken, message",
+    [
+        ("choices: [pour, parce que, mais]\n", "choices"),          # removed below
+        ("    gap: alors\n", "one of choices"),
+        ("  - sentence: Je prends le vélo aller au travail.\n", "___"),
+    ],
+)
+def test_grammar_file_validation(tmp_path, broken, message):
+    text = GRAMMAR_YAML
+    if broken.startswith("choices"):
+        text = text.replace(broken, "")                      # a grammar theme without choices
+    elif broken.strip().startswith("gap"):
+        text = text.replace("    gap: pour\n", broken)        # a gap that is not a choice
+    else:
+        text = text.replace("  - sentence: Je prends le vélo ___ aller au travail.\n", broken)
+    path = tmp_path / "bad.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=message):
+        read_theme_file(path)
+
+
+def test_loading_a_grammar_theme_creates_both_cards(conn, user):
+    theme = read_theme_file_from_text(GRAMMAR_YAML)  # see helper below
+    assert load_theme(conn, theme).loaded == 1
+    row = conn.execute(
+        "SELECT kind, sentence, gap_answer FROM french.items WHERE kind = 'grammar'"
+    ).fetchone()
+    assert (row["kind"], row["gap_answer"]) == ("grammar", "pour")
+    directions = [
+        r["direction"]
+        for r in conn.execute("SELECT direction FROM french.cards ORDER BY direction")
+    ]
+    assert directions == ["gap", "translate"]
