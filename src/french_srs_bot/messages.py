@@ -169,10 +169,6 @@ def override_refused() -> str:
     return "Dit antwoord is al verwerkt"
 
 
-def override_hint() -> str:
-    return "Vond je je vertaling toch goed?"
-
-
 def summary(done_today: int, goal: int, due_now: int, streak: int, *, more_available: bool) -> str:
     if done_today >= goal:
         text = f"🎯 <b>Dagdoel gehaald!</b> {done_today}/{goal} kaarten vandaag."
@@ -198,6 +194,13 @@ def reminder(stats: DayStats, goal: int) -> str:
 
 def stale_intro() -> str:
     return "Dit woord is nu niet aan de beurt"
+
+
+def no_grammar_due() -> str:
+    return (
+        "🧩 Er staan nu geen zinnen klaar. Zodra ze weer aan de beurt zijn, krijg je ze vanzelf.\n"
+        "De woordjes lopen gewoon door: /practice"
+    )
 
 
 def no_pending_card() -> str:

@@ -176,4 +176,8 @@ def test_override_texts():
     assert "goed" in messages.BUTTON_OVERRIDE.lower()
     assert messages.override_applied()
     assert messages.override_refused()
-    assert messages.override_hint()
+
+
+def test_no_grammar_due_points_at_the_words():
+    text = messages.no_grammar_due()
+    assert "/practice" in text

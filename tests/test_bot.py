@@ -478,3 +478,33 @@ def test_a_database_error_on_the_override_button_is_reported(settings, monkeypat
     asyncio.run(bot.on_override_pressed(update, context))
 
     assert context.bot.send_message.await_args.kwargs["text"] == messages.database_unavailable()
+
+
+def test_grammar_says_so_when_there_are_no_sentences(conn, settings, user, add_items, monkeypatch):
+    """A generic "setje klaar" is confusing when you asked for grammar in particular."""
+    add_items([("le chien", "de hond")])  # words, but not a single sentence
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    context = make_context(settings)
+
+    asyncio.run(bot.on_grammar(update, context))
+
+    context.bot.send_message.assert_awaited_once()
+    assert context.bot.send_message.await_args.kwargs["text"] == messages.no_grammar_due()
+
+
+def test_grammar_still_asks_when_a_sentence_is_waiting(conn, settings, user, add_grammar, monkeypatch):
+    add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    context = make_context(settings)
+
+    asyncio.run(bot.on_grammar(update, context))
+
+    markup = context.bot.send_message.await_args.kwargs["reply_markup"]
+    buttons = [button for row in markup.inline_keyboard for button in row]
+    assert sorted(button.text for button in buttons) == ["mais", "parce que", "pour"]

@@ -164,9 +164,8 @@ async def send_feedback(
                                    callback_data=f"{OVERRIDE_PREFIX}:{answered.review_id}")]]
         )
     if settings.tts.enabled and card.direction in ("nl_fr", "gap"):
+        # Never with a keyboard: markup only exists for a translate card, which is not read aloud.
         await send_with_voice(bot, chat_id, conn, card, text, settings)
-        if markup is not None:  # a voice memo cannot carry a keyboard
-            await send(bot, chat_id, messages.override_hint(), markup)
         return
     await send(bot, chat_id, text, markup)
 
@@ -360,6 +359,13 @@ async def on_grammar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 return
             settings = settings_for(deps.settings, user)
             step = session.start_batch(conn, settings, user.id, now, kind="grammar")
+            if isinstance(step, session.Summary) and not session.pick_next(
+                conn, settings, user.id, now, first_of_batch=True, kind="grammar"
+            ):
+                # The daily summary answers a question that was not asked: this one was about
+                # the sentences, and there are none waiting.
+                await send(context.bot, chat_id, messages.no_grammar_due())
+                return
             await send_step(context.bot, chat_id, conn, step, now, settings, user.id)
     except psycopg.Error:
         log.exception("database unavailable in /grammar")
