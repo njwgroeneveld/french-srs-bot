@@ -276,45 +276,60 @@ def get_card(conn: psycopg.Connection, card_id: int, *, user_id: int) -> CardVie
 
 
 def due_cards(
-    conn: psycopg.Connection, *, user_id: int, now: datetime, day_start: datetime
+    conn: psycopg.Connection,
+    *,
+    user_id: int,
+    now: datetime,
+    day_start: datetime,
+    kind: str | None = None,
 ) -> list[CardView]:
     rows = conn.execute(
         _CARD_SELECT
         + """
         WHERE c.user_id = %(user_id)s
+          AND (%(kind)s::text IS NULL OR i.kind = %(kind)s::text)
           AND c.introduced_at IS NOT NULL AND COALESCE(c.due, c.introduced_at) <= %(now)s AND
         """
         + _SIBLING_NOT_REVIEWED_TODAY
         + " ORDER BY COALESCE(c.due, c.introduced_at), c.id",
-        {"now": now, "day_start": day_start, "user_id": user_id},
+        {"now": now, "day_start": day_start, "user_id": user_id, "kind": kind},
     ).fetchall()
     return [_card_from_row(row) for row in rows]
 
 
 def next_new_card(
-    conn: psycopg.Connection, *, user_id: int, now: datetime, day_start: datetime
+    conn: psycopg.Connection,
+    *,
+    user_id: int,
+    now: datetime,
+    day_start: datetime,
+    kind: str | None = None,
 ) -> CardView | None:
+    # A secondary card (nl_fr, translate) only follows once its primary (fr_nl, gap) was
+    # introduced on an earlier day and is not due right now.
     row = conn.execute(
         _CARD_SELECT
         + """
         WHERE c.user_id = %(user_id)s
+          AND (%(kind)s::text IS NULL OR i.kind = %(kind)s::text)
           AND c.introduced_at IS NULL
           AND """
         + _SIBLING_NOT_REVIEWED_TODAY
         + """
           AND (
-              c.direction = 'fr_nl'
+              c.direction IN ('fr_nl', 'gap')
               OR EXISTS (
                   SELECT 1 FROM french.cards s
-                  WHERE s.item_id = c.item_id AND s.direction = 'fr_nl' AND s.user_id = c.user_id
+                  WHERE s.item_id = c.item_id AND s.direction IN ('fr_nl', 'gap')
+                    AND s.user_id = c.user_id
                     AND s.introduced_at IS NOT NULL AND s.introduced_at < %(day_start)s
                     AND (s.due IS NOT NULL AND s.due > %(now)s)
               )
           )
-        ORDER BY t.position, i.position, c.direction = 'nl_fr', c.id
+        ORDER BY t.position, i.position, c.direction IN ('nl_fr', 'translate'), c.id
         LIMIT 1
         """,
-        {"now": now, "day_start": day_start, "user_id": user_id},
+        {"now": now, "day_start": day_start, "user_id": user_id, "kind": kind},
     ).fetchone()
     return _card_from_row(row) if row else None
 

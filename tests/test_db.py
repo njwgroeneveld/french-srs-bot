@@ -54,6 +54,42 @@ def test_vocab_item_still_gets_the_two_directions(conn, user, add_items):
     assert db.get_card(conn, card_ids(conn, item_id)["fr_nl"], user_id=user.id).kind == "vocab"
 
 
+def test_next_new_card_gives_the_gap_before_the_translation(conn, user, add_grammar):
+    (item_id,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])])
+    first = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+    assert first.direction == "gap"
+
+    # introduced today: the translation has to wait for a later day
+    db.introduce_card(conn, first.card_id, NOW, user_id=user.id)
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START) is None
+
+    # introduced yesterday and not due now: the translation is next
+    make_due(conn, first.card_id, introduced_at=DAY_START - timedelta(hours=1), due=NOW + timedelta(hours=3))
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START).direction == "translate"
+
+
+def test_kind_filter_separates_words_and_grammar(conn, user, add_items, add_grammar):
+    add_items([("le chien", "de hond")], theme_ref="theme/v1", theme_position=1)
+    add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])],
+                theme_ref="theme/g1", theme_position=2)
+    mixed = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+    assert mixed.kind == "vocab"  # theme position decides
+    only_grammar = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START, kind="grammar")
+    assert only_grammar.kind == "grammar"
+    assert only_grammar.direction == "gap"
+
+
+def test_due_cards_can_be_limited_to_grammar(conn, user, add_items, add_grammar):
+    (word,) = add_items([("le chien", "de hond")], theme_ref="theme/v1", theme_position=1)
+    (sentence,) = add_grammar([("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])],
+                              theme_ref="theme/g1", theme_position=2)
+    make_due(conn, card_ids(conn, word)["fr_nl"], introduced_at=DAY_START - timedelta(days=2), due=NOW)
+    make_due(conn, card_ids(conn, sentence)["gap"], introduced_at=DAY_START - timedelta(days=2), due=NOW)
+    assert len(db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START)) == 2
+    grammar_only = db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START, kind="grammar")
+    assert [c.kind for c in grammar_only] == ["grammar"]
+
+
 def test_upsert_item_creates_both_cards_and_updates_in_place(conn, user, add_items):
     (item_id,) = add_items([("le chien", "de hond")])
     assert set(card_ids(conn, item_id)) == {"fr_nl", "nl_fr"}
