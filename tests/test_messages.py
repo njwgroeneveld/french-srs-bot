@@ -12,6 +12,25 @@ def make_card(direction="fr_nl", gender="f", hint=None):
     )
 
 
+def grammar_card(direction):
+    return CardView(
+        card_id=1,
+        item_id=1,
+        direction=direction,
+        french=["Je prends le vélo pour aller au travail."],
+        dutch=["Ik neem de fiets om naar mijn werk te gaan"],
+        gender=None,
+        hint="parce qu' voor een klinker",
+        introduced_at=None,
+        srs=None,
+        kind="grammar",
+        sentence="Je prends le vélo ___ aller au travail.",
+        gap_answer="pour",
+        rule="pour + infinitief = doel",
+        choices=["pour", "parce que", "mais"],
+    )
+
+
 def test_prompt_shows_question_in_the_right_direction():
     assert "l&#x27;école" in messages.prompt(make_card("fr_nl"))
     assert "de school" in messages.prompt(make_card("nl_fr"))
@@ -128,3 +147,32 @@ def test_study_order_marks_where_you_are():
 
 def test_study_order_survives_an_empty_database():
     assert messages.study_order([]) != ""
+
+
+def test_gap_prompt_shows_the_sentence_with_the_gap():
+    card = grammar_card("gap")
+    text = messages.prompt(card)
+    assert "___" in text
+    assert "Vul het ontbrekende" in text
+
+
+def test_gap_feedback_shows_the_rule_and_the_full_sentence():
+    card = grammar_card("gap")
+    correct = messages.gap_feedback(True, card)
+    assert "<b>pour</b>" in correct
+    assert "pour + infinitief" in correct
+    wrong = messages.gap_feedback(False, card)
+    assert "Het is" in wrong and "pour" in wrong
+
+
+def test_translate_prompt_asks_for_the_translation():
+    card = grammar_card("translate")
+    text = messages.prompt(card)
+    assert "🇫🇷 → 🇳🇱" in text
+    assert "Je prends le vélo pour aller au travail." in text
+
+
+def test_override_texts():
+    assert "goed" in messages.BUTTON_OVERRIDE.lower()
+    assert messages.override_applied()
+    assert messages.override_refused()

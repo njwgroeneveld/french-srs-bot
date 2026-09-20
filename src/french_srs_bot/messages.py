@@ -11,6 +11,7 @@ from .models import CardView, DayStats, ThemeProgress
 from .session import Standing
 
 BUTTON_UNDERSTOOD = "👍 Begrepen"
+BUTTON_OVERRIDE = "✅ Toch goed"
 
 # Short release notes, pushed once to everyone who has not seen them. Numbers only go up:
 # add one at the bottom and it goes out on the next start. Nothing is ever sent twice,
@@ -26,13 +27,22 @@ ANNOUNCEMENTS: tuple[tuple[int, str], ...] = (
         "accenten wel meetellen en hoofdletters niet.\n\n"
         "Typ <b>/</b> in de chat voor het hele menu.",
     ),
+    (
+        2,
+        "🆕 <b>Grammatica erbij</b>\n\n"
+        "Bij de zinnen uit je les vul je eerst het ontbrekende verbindingswoord in (tik op een "
+        "knop), daarna vertaal je de zin.\n\n"
+        "Vind je dat je vertaling toch goed was? Druk op <b>✅ Toch goed</b>: dan telt hij, en "
+        "onthoud ik hem voor de volgende keer.\n\n"
+        "<b>/grammar</b> — alleen zinnen oefenen. /practice blijft alles door elkaar doen.",
+    ),
 )
 
 
 def unseen_announcements(last_seen: int) -> list[tuple[int, str]]:
     return [(number, text) for number, text in ANNOUNCEMENTS if number > last_seen]
 
-_FLAGS = {"fr_nl": "🇫🇷 → 🇳🇱", "nl_fr": "🇳🇱 → 🇫🇷"}
+_FLAGS = {"fr_nl": "🇫🇷 → 🇳🇱", "nl_fr": "🇳🇱 → 🇫🇷", "translate": "🇫🇷 → 🇳🇱"}
 _GENDER = {"m": "mannelijk", "f": "vrouwelijk"}
 
 
@@ -66,6 +76,7 @@ def help_text(batch_times: Sequence[time], goal: int) -> str:
         "gedaan. Typ je antwoord gewoon als bericht terug.\n\n"
         "<b>Commando's</b>\n"
         "/practice — oefen nu een setje\n"
+        "/grammar — oefen alleen de zinnen\n"
         "/stand — hoe staan jullie er deze week voor\n"
         "/help — dit bericht\n\n"
         "<b>Wat de tekens betekenen</b>\n"
@@ -106,10 +117,33 @@ def intro(card: CardView) -> str:
 
 
 def prompt(card: CardView) -> str:
+    if card.direction == "gap":
+        return (
+            "🧩 <b>Vul het ontbrekende verbindingswoord in:</b>\n\n"
+            f"<b>{escape(card.question)}</b>"
+        )
+    if card.direction == "translate":
+        return f"{_FLAGS[card.direction]}  <i>Vertaal:</i>\n\n<b>{escape(card.question)}</b>"
     text = f"{_FLAGS[card.direction]}\n\n<b>{escape(card.question)}</b>"
     if card.direction == "nl_fr" and card.hint:
         text += f"\n<i>({escape(card.hint)})</i>"
     return text
+
+
+def _rule_lines(card: CardView) -> str:
+    lines = []
+    if card.rule:
+        lines.append(f"<i>{escape(card.rule)}</i>")
+    if card.hint:
+        lines.append(f"💡 <i>{escape(card.hint)}</i>")
+    return ("\n" + "\n".join(lines)) if lines else ""
+
+
+def gap_feedback(correct: bool, card: CardView) -> str:
+    """The verdict on a tapped choice, always with the completed sentence and the rule."""
+    sentence = escape(card.sentence).replace("___", f"<b>{escape(card.gap_answer)}</b>")
+    head = "✅ <b>Juist!</b>" if correct else f"❌ Het is <b>{escape(card.gap_answer)}</b>."
+    return f"{head}\n\n{sentence}{_rule_lines(card)}"
 
 
 def feedback(result: GradeResult, card: CardView) -> str:
@@ -122,7 +156,17 @@ def feedback(result: GradeResult, card: CardView) -> str:
         return f"🟠 Het woord klopt, maar let op het lidwoord: {expected}{_gender_note(card)}"
     if result.reason == "typo":
         return f"🟠 Kleine typefout. Het is: {expected}"
+    if card.direction == "translate":
+        return f"❌ Modelvertaling:\n<b>{escape(card.dutch[0])}</b>"
     return f"❌ Helaas. Het juiste antwoord:\n{_answer_line(card)}"
+
+
+def override_applied() -> str:
+    return "✅ Genoteerd, dit antwoord telt vanaf nu als goed."
+
+
+def override_refused() -> str:
+    return "Dit antwoord is al verwerkt"
 
 
 def summary(done_today: int, goal: int, due_now: int, streak: int, *, more_available: bool) -> str:
