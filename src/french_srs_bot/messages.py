@@ -36,6 +36,15 @@ ANNOUNCEMENTS: tuple[tuple[int, str], ...] = (
         "onthoud ik hem voor de volgende keer.\n\n"
         "<b>/grammar</b> — alleen zinnen oefenen. /practice blijft alles door elkaar doen.",
     ),
+    (
+        3,
+        "🆕 <b>L'impératif erbij</b>\n\n"
+        "Bij deze zinnen krijg je geen knoppen: je typt de vorm zelf. Onder de zin staat welk "
+        "werkwoord het is en welke vorm ik vraag — de <i>tu</i>-, <i>nous</i>- of "
+        "<i>vous</i>-vorm.\n\n"
+        "Na je antwoord zie je de hele zin met de vertaling eronder, hoor je hem uitgesproken, "
+        "en staat erbij waarom het die vorm is.",
+    ),
 )
 
 
