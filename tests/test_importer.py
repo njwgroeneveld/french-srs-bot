@@ -265,6 +265,16 @@ def test_grammar_file_derives_the_completed_sentence(tmp_path):
     assert item.rule == "pour + infinitief = doel"
 
 
+def test_a_grammar_theme_without_choices_is_typed_not_rejected(tmp_path):
+    """One conjugated form per sentence does not fit on buttons: such a theme is typed."""
+    text = GRAMMAR_YAML.replace("choices: [pour, parce que, mais]\n", "")
+    path = tmp_path / "typed.yaml"
+    path.write_text(text, encoding="utf-8")
+    theme = read_theme_file(path)
+    assert theme.choices == []
+    assert theme.items[0].gap_answer == "pour"
+
+
 def test_grammar_file_round_trips(tmp_path):
     path = tmp_path / "grammar.yaml"
     path.write_text(GRAMMAR_YAML, encoding="utf-8")
@@ -277,7 +287,7 @@ def test_grammar_file_round_trips(tmp_path):
 @pytest.mark.parametrize(
     "broken, message",
     [
-        ("choices: [pour, parce que, mais]\n", "choices"),          # removed below
+        ("choices: [pour]\n", "at least two"),                       # one button is no choice
         ("    gap: alors\n", "one of choices"),
         ("  - sentence: Je prends le vélo aller au travail.\n", "___"),
     ],
@@ -285,7 +295,7 @@ def test_grammar_file_round_trips(tmp_path):
 def test_grammar_file_validation(tmp_path, broken, message):
     text = GRAMMAR_YAML
     if broken.startswith("choices"):
-        text = text.replace(broken, "")                      # a grammar theme without choices
+        text = text.replace("choices: [pour, parce que, mais]\n", broken)
     elif broken.strip().startswith("gap"):
         text = text.replace("    gap: pour\n", broken)        # a gap that is not a choice
     else:

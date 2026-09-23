@@ -367,23 +367,27 @@ def test_a_correct_translation_has_no_override_button(settings):
     assert telegram_bot.send_message.await_args.kwargs["reply_markup"] is None
 
 
-def test_a_grammar_card_without_choices_is_not_asked(settings, caplog):
-    broken = replace(GAP_CARD, choices=[])
+def test_a_grammar_card_without_choices_is_asked_to_be_typed(settings):
+    """No buttons means the answer is typed — the way a theme with too many forms to fit on
+    buttons (one conjugated form per sentence) asks its questions."""
+    typed = replace(GAP_CARD, choices=[])
     telegram_bot = AsyncMock()
 
-    asyncio.run(bot.send_question(telegram_bot, 42, object(), broken, settings))
+    asked = asyncio.run(bot.send_question(telegram_bot, 42, object(), typed, settings))
 
-    telegram_bot.send_message.assert_not_awaited()
-    assert "choices" in caplog.text
+    assert asked is True
+    kwargs = telegram_bot.send_message.await_args.kwargs
+    assert kwargs["reply_markup"] is None
+    assert "___" in kwargs["text"]
 
 
 def test_a_choiceless_gap_card_does_not_strand_the_batch(
     conn, settings, user, add_items, add_grammar, monkeypatch
 ):
-    """An unusable card must not stay pending: every later /practice would answer nothing at all.
+    """The card must be asked and stay answerable: it is the pending card, without buttons.
 
-    Through the real session and db layers, because the stranding was exactly in the seam
-    between send_step (which makes a card pending) and send_question (which refused it).
+    Through the real session and db layers, because this is exactly the seam between
+    send_step (which makes a card pending) and send_question (which asks it).
     """
     (grammar_item,) = add_grammar(
         [("Je prends le vélo ___ aller au travail.", "pour", ["Ik neem de fiets"])],
@@ -412,9 +416,10 @@ def test_a_choiceless_gap_card_does_not_strand_the_batch(
     asyncio.run(bot.on_practice(update, context))
 
     state = db.get_bot_state(conn, user_id=user.id)
-    assert state.pending_card_id != gap_card
-    assert state.pending_card_id == vocab_card
-    assert "le chien" in context.bot.send_message.await_args.kwargs["text"]
+    assert state.pending_card_id == gap_card
+    kwargs = context.bot.send_message.await_args.kwargs
+    assert "___" in kwargs["text"]
+    assert kwargs["reply_markup"] is None
 
 
 def card_of(conn, item_id, direction, user_id):

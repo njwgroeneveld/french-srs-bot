@@ -118,10 +118,16 @@ def intro(card: CardView) -> str:
 
 def prompt(card: CardView) -> str:
     if card.direction == "gap":
-        return (
-            "🧩 <b>Vul het ontbrekende verbindingswoord in:</b>\n\n"
+        text = (
+            "🧩 <b>Vul het ontbrekende woord in:</b>\n\n"
             f"<b>{escape(card.question)}</b>"
         )
+        if card.hint:
+            # The cue that makes the gap unambiguous (e.g. which verb and which form for a
+            # grammar item with more than one grammatically valid completion). Shown here,
+            # before answering — unlike the rule, which only makes sense as an explanation.
+            text += f"\n<i>({escape(card.hint)})</i>"
+        return text
     if card.direction == "translate":
         return f"{_FLAGS[card.direction]}  <i>Vertaal:</i>\n\n<b>{escape(card.question)}</b>"
     text = f"{_FLAGS[card.direction]}\n\n<b>{escape(card.question)}</b>"
@@ -131,19 +137,35 @@ def prompt(card: CardView) -> str:
 
 
 def _rule_lines(card: CardView) -> str:
+    # The hint already went out with the prompt (see above), so it is not repeated here.
     lines = []
     if card.rule:
         lines.append(f"<i>{escape(card.rule)}</i>")
-    if card.hint:
-        lines.append(f"💡 <i>{escape(card.hint)}</i>")
     return ("\n" + "\n".join(lines)) if lines else ""
 
 
-def gap_feedback(correct: bool, card: CardView) -> str:
-    """The verdict on a tapped choice, always with the completed sentence and the rule."""
-    sentence = escape(card.sentence).replace("___", f"<b>{escape(card.gap_answer)}</b>")
-    head = "✅ <b>Juist!</b>" if correct else f"❌ Het is <b>{escape(card.gap_answer)}</b>."
-    return f"{head}\n\n{sentence}{_rule_lines(card)}"
+# The verdict line per grading reason. A tapped choice is only ever exact or wrong; a typed
+# answer also lands on the near misses, and those deserve the same 🟡/🟠 as anywhere else.
+_GAP_HEADS: dict[str, str] = {
+    "exact": "✅ <b>Juist!</b>",
+    "accent": "🟡 Bijna! Let op de accenten: {answer}",
+    "article": "🟠 Bijna! Let op het lidwoord: {answer}",
+    "typo": "🟠 Kleine typefout. Het is: {answer}",
+    "wrong": "❌ Het is {answer}.",
+}
+
+
+def gap_feedback(result: GradeResult, card: CardView) -> str:
+    """The verdict on a gap answer, with the completed sentence, its translation and the rule.
+
+    The audio for this same sentence goes out separately, as the voice memo `send_feedback`
+    wraps this text in (see bot.py) — so "uitspraak" and "vertaling" both ship with feedback.
+    """
+    answer = f"<b>{escape(card.gap_answer)}</b>"
+    head = _GAP_HEADS.get(result.reason, _GAP_HEADS["wrong"]).format(answer=answer)
+    sentence = escape(card.sentence).replace("___", answer)
+    translation = f"\n<i>{escape(card.dutch[0])}</i>" if card.dutch else ""
+    return f"{head}\n\n{sentence}{translation}{_rule_lines(card)}"
 
 
 def feedback(result: GradeResult, card: CardView) -> str:

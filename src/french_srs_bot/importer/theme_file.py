@@ -60,8 +60,14 @@ def read_theme_file(path: Path) -> ThemeFile:
     if kind not in ("vocab", "grammar"):
         raise ValueError(f"{path}: kind must be vocab or grammar, got {kind!r}")
     choices = raw.get("choices") or []
-    if kind == "grammar" and not (_is_answer_list(choices) and len(choices) >= 2):
-        raise ValueError(f"{path}: a grammar theme needs choices: a list of at least two strings")
+    # Choices are the buttons of a theme. A theme whose answers are too many to fit on buttons
+    # (one conjugated form per sentence, say) leaves them out and is answered by typing, so the
+    # list is either absent or long enough to choose from — never a single button.
+    if kind == "grammar" and choices and not (_is_answer_list(choices) and len(choices) >= 2):
+        raise ValueError(
+            f"{path}: grammar choices must be a list of at least two strings, or be left out"
+            " entirely for a theme whose answers are typed"
+        )
     if kind == "vocab" and choices:
         raise ValueError(f"{path}: choices belong to a grammar theme, not to a vocab one")
     items = []
@@ -73,7 +79,9 @@ def read_theme_file(path: Path) -> ThemeFile:
                 raise ValueError(
                     f"{path}: item {number} needs a sentence with exactly one ___ gap, got {sentence!r}"
                 )
-            if gap not in choices:
+            if not isinstance(gap, str) or not gap.strip():
+                raise ValueError(f"{path}: item {number} needs a gap answer, got {gap!r}")
+            if choices and gap not in choices:
                 raise ValueError(f"{path}: item {number} gap {gap!r} must be one of choices")
             item = {**item, "french": [sentence.replace("___", gap)]}
         french, dutch = item.get("french"), item.get("dutch")

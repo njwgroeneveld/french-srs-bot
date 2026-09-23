@@ -133,12 +133,10 @@ async def send_question(
     translate. With NL->FR and with a gap to fill it would give the answer away."""
     text = messages.prompt(card)
     if card.direction == "gap":
-        if not card.choices:
-            # Hand-edited row: a gap card without choices has no answerable question. The caller
-            # has to let go of it, or the batch stays parked on a question nobody ever sees.
-            log.error("grammar card %s has no choices, skipping it", card.card_id)
-            return False
-        await send(bot, chat_id, text, gap_markup(card))
+        # Choices make it multiple choice; without them the answer is typed, like every other
+        # card. A theme whose answers are too many to fit on buttons (one conjugated form per
+        # sentence, say) leaves `choices` empty and relies on the hint to pin the question down.
+        await send(bot, chat_id, text, gap_markup(card) if card.choices else None)
         return True
     if settings.tts.enabled and card.direction in ("fr_nl", "translate"):
         await send_with_voice(bot, chat_id, conn, card, text, settings)
@@ -154,7 +152,7 @@ async def send_feedback(
     NL->FR answer, and with the completed sentence of a gap card."""
     card = answered.card
     if card.direction == "gap":
-        text = messages.gap_feedback(answered.result.grade is Grade.CORRECT, card)
+        text = messages.gap_feedback(answered.result, card)
     else:
         text = messages.feedback(answered.result, card)
     markup = None

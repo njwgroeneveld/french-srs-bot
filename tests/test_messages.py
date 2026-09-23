@@ -156,13 +156,33 @@ def test_gap_prompt_shows_the_sentence_with_the_gap():
     assert "Vul het ontbrekende" in text
 
 
-def test_gap_feedback_shows_the_rule_and_the_full_sentence():
+def test_gap_prompt_shows_the_hint_when_the_sentence_alone_is_ambiguous():
+    # e.g. "___ dans le bus !" fits Monte/Montons/Montez equally: the hint (verb + form)
+    # is what makes the question answerable, so it has to go out before the answer.
     card = grammar_card("gap")
-    correct = messages.gap_feedback(True, card)
+    assert "parce qu&#x27; voor een klinker" in messages.prompt(card)
+
+
+def gap_result(grade=Grade.CORRECT, reason="exact"):
+    return GradeResult(grade=grade, reason=reason, expected="pour")
+
+
+def test_gap_feedback_shows_the_translation_and_the_rule_but_not_the_hint_again():
+    card = grammar_card("gap")
+    correct = messages.gap_feedback(gap_result(), card)
     assert "<b>pour</b>" in correct
     assert "pour + infinitief" in correct
-    wrong = messages.gap_feedback(False, card)
+    assert "Ik neem de fiets om naar mijn werk te gaan" in correct
+    assert "parce qu&#x27; voor een klinker" not in correct
+    wrong = messages.gap_feedback(gap_result(Grade.WRONG, "wrong"), card)
     assert "Het is" in wrong and "pour" in wrong
+
+
+def test_gap_feedback_marks_a_typed_near_miss_as_a_near_miss():
+    """A typed gap answer reaches the same near misses as any other typed card."""
+    card = grammar_card("gap")
+    assert "🟡" in messages.gap_feedback(gap_result(Grade.ALMOST, "accent"), card)
+    assert "🟠" in messages.gap_feedback(gap_result(Grade.ALMOST, "typo"), card)
 
 
 def test_translate_prompt_asks_for_the_translation():
