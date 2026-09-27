@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import psycopg
 from psycopg.rows import dict_row
@@ -338,6 +339,7 @@ def next_new_card(
     now: datetime,
     day_start: datetime,
     kind: str | None = None,
+    shuffle_seed: str | None = None,
 ) -> CardView | None:
     # A secondary card (nl_fr, translate) only follows once its primary (fr_nl, gap) was
     # introduced on an earlier day and is not due right now.
@@ -345,6 +347,15 @@ def next_new_card(
     # The focus is read here instead of being passed in: every caller already scopes by
     # user_id, and threading one WHERE clause through session and bot would touch five call
     # sites for nothing. It deliberately narrows new cards only -- reviews follow the planning.
+    #
+    # With a focus set, the themes of that chapter are shuffled instead of walked in order,
+    # so a day mixes vocabulary and grammar rather than emptying theme 6 before reaching 12.
+    # The shuffle is per theme, not per card: md5 over the theme id plus a seed gives every
+    # row of one theme the same sort key, so `i.position` still decides inside it -- which
+    # matters, because a theme's own order builds up (mets -> met -> mettons, and the regular
+    # colours before marron and beau). A fresh seed per call re-rolls the shuffle for every
+    # new card; tests pass a fixed one. Without a focus nothing changes: chapters are studied
+    # in their own order, and A0 has no business between A1.5 cards.
     row = conn.execute(
         _CARD_SELECT
         + """
@@ -368,10 +379,21 @@ def next_new_card(
                     AND (s.due IS NOT NULL AND s.due > %(now)s)
               )
           )
-        ORDER BY t.position, i.position, c.direction IN ('nl_fr', 'translate'), c.id
+        ORDER BY (
+                  SELECT CASE WHEN u.focus IS NULL THEN t.position END
+                  FROM french.users u WHERE u.id = c.user_id
+                 ),
+                 md5(t.id::text || %(shuffle_seed)s),
+                 i.position, c.direction IN ('nl_fr', 'translate'), c.id
         LIMIT 1
         """,
-        {"now": now, "day_start": day_start, "user_id": user_id, "kind": kind},
+        {
+            "now": now,
+            "day_start": day_start,
+            "user_id": user_id,
+            "kind": kind,
+            "shuffle_seed": shuffle_seed if shuffle_seed is not None else uuid4().hex,
+        },
     ).fetchone()
     return _card_from_row(row) if row else None
 

@@ -495,3 +495,45 @@ def test_resolve_chapter_forgives_case_and_spaces(conn, add_items):
     assert db.resolve_chapter(conn, " a1.5 ") == "A1.5"
     assert db.resolve_chapter(conn, "A1.5") == "A1.5"
     assert db.resolve_chapter(conn, "A9") is None
+
+
+def add_one_chapter_in_two_themes(add_items):
+    """One chapter (A1.5) split over a vocabulary theme and a grammar theme, as in the book."""
+    add_items([("la chemise", "het overhemd"), ("la jupe", "de rok")],
+              theme_ref="theme/a15-vetements", theme_position=6, name="A1.5 · Les vêtements")
+    add_items([("je mets", "ik trek aan"), ("il met", "hij trekt aan")],
+              theme_ref="theme/a15-present", theme_position=13, name="A1.5 · Le présent")
+
+
+def first_new_french(conn, user, seed):
+    return db.next_new_card(
+        conn, user_id=user.id, now=NOW, day_start=DAY_START, shuffle_seed=seed
+    ).french[0]
+
+
+def test_focus_mixes_the_themes_of_the_chapter(conn, user, add_items):
+    add_one_chapter_in_two_themes(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+
+    # Which theme comes up depends on the seed, so over a handful of them both appear --
+    # the whole point: grammar no longer waits until the vocabulary theme is empty.
+    seen = {first_new_french(conn, user, str(seed)) for seed in range(12)}
+
+    assert seen == {"la chemise", "je mets"}
+
+
+def test_the_shuffle_never_jumps_ahead_inside_a_theme(conn, user, add_items):
+    add_one_chapter_in_two_themes(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+
+    # Whichever theme a seed lands on, it hands over that theme's first item: position 2
+    # ("la jupe", "il met") is never introduced before position 1.
+    assert all(first_new_french(conn, user, str(seed)) in ("la chemise", "je mets")
+               for seed in range(12))
+
+
+def test_without_a_focus_the_theme_order_still_decides(conn, user, add_items):
+    add_two_chapters(add_items)
+
+    # No focus: U4 (position 1) comes before A1.5 (position 6), whatever the seed is.
+    assert {first_new_french(conn, user, str(seed)) for seed in range(12)} == {"le vélo"}
