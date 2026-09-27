@@ -33,6 +33,7 @@ class User:
     daily_new: int | None = None
     batch_size: int | None = None
     last_announcement: int = 0  # highest release note this user has received
+    focus: str | None = None  # chapter new cards come from; None: the normal theme order
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,16 @@ class ThemeProgress:
     name: str
     cards: int
     started: int  # cards that have been introduced; the rest is still ahead
+
+
+@dataclass(frozen=True)
+class ChapterProgress:
+    """How far one user is into one chapter, for /switch and the study order."""
+
+    name: str  # the chapter as themes.chapter stores it, e.g. "A1.5"
+    position: int  # the position of its first theme: chapters are listed in study order
+    cards: int
+    started: int
 
 
 @dataclass(frozen=True)

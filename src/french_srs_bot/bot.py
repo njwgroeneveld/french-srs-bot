@@ -27,13 +27,17 @@ from telegram.ext import (
 from . import db, messages, session, tts
 from .config import Secrets, Settings, settings_for
 from .grading import Grade
-from .models import CardView, User
+from .models import CardView, ChapterProgress, User
 from .srs import build_scheduler
 
 log = logging.getLogger(__name__)
 
 GAP_PREFIX = "gap"
 OVERRIDE_PREFIX = "ok"
+FOCUS_PREFIX = "focus"
+
+# What you can type instead of a chapter to take the focus off again.
+FOCUS_OFF = ("alles", "geen", "uit", "off")
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,50 @@ def gap_markup(card: CardView) -> InlineKeyboardMarkup:
     random.shuffle(buttons)
     rows = [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
     return InlineKeyboardMarkup(rows)
+
+
+def focus_markup(chapters: Sequence[ChapterProgress], current: str | None) -> InlineKeyboardMarkup:
+    """One button per chapter in study order, and one to take the focus off again.
+
+    The chapter name travels in the callback data rather than an index: a button that is
+    pressed days later then still means the chapter it says, even if a new chapter was
+    imported in between. Names are a theme-name prefix ("A1.5"), so they fit the 64 bytes
+    Telegram allows.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                messages.focus_button(chapter, current=chapter.name == current),
+                callback_data=f"{FOCUS_PREFIX}:{chapter.name}",
+            )
+        ]
+        for chapter in chapters
+    ]
+    rows.append([InlineKeyboardButton(messages.BUTTON_NO_FOCUS, callback_data=f"{FOCUS_PREFIX}:")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def apply_focus(
+    bot: Bot, chat_id: int, conn: psycopg.Connection, user: User, wanted: str
+) -> None:
+    """Set this user's focus to `wanted` (empty: none), and say what that means.
+
+    Shared by the command and the buttons, so typing and tapping cannot drift apart.
+    """
+    if wanted.strip().lower() in FOCUS_OFF:
+        wanted = ""
+    chapter = db.resolve_chapter(conn, wanted) if wanted else None
+    if wanted and chapter is None:
+        chapters = db.chapters(conn, user_id=user.id)
+        await send(bot, chat_id, messages.focus_unknown(wanted), focus_markup(chapters, user.focus))
+        return
+    db.set_focus(conn, user_id=user.id, chapter=chapter)
+    if chapter is None:
+        await send(bot, chat_id, messages.focus_cleared())
+        return
+    progress = next((c for c in db.chapters(conn, user_id=user.id) if c.name == chapter), None)
+    exhausted = progress is not None and progress.started >= progress.cards
+    await send(bot, chat_id, messages.focus_set(chapter, exhausted=exhausted))
 
 
 def choice_from_callback(card: CardView, data: str) -> str | None:
@@ -417,11 +465,58 @@ async def on_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if user is None:
                 return
             themes = db.theme_progress(conn, user_id=user.id)
+            focus = user.focus
     except psycopg.Error:
         log.exception("database unavailable in /volgorde")
         await send(context.bot, chat_id, messages.database_unavailable())
         return
-    await send(context.bot, chat_id, messages.study_order(themes))
+    await send(context.bot, chat_id, messages.study_order(themes, focus))
+
+
+async def on_focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/focus: the chapter list as buttons, or "/focus A1.5" straight away."""
+    deps = deps_of(context)
+    chat_id = update.effective_chat.id
+    wanted = " ".join(context.args or [])
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is None:
+                return
+            if wanted:
+                await apply_focus(context.bot, chat_id, conn, user, wanted)
+                return
+            chapters = db.chapters(conn, user_id=user.id)
+            markup = focus_markup(chapters, user.focus) if chapters else None
+            await send(context.bot, chat_id, messages.focus_prompt(chapters, user.focus), markup)
+    except psycopg.Error:
+        log.exception("database unavailable in /focus")
+        await send(context.bot, chat_id, messages.database_unavailable())
+
+
+async def on_focus_pressed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    deps = deps_of(context)
+    query = update.callback_query
+    _prefix, _colon, wanted = query.data.partition(":")
+    try:
+        with db.connect(deps.secrets.database_url) as conn:
+            user = user_of(conn, update)
+            if user is None:
+                await query.answer()
+                return
+            await query.answer()
+            await apply_focus(context.bot, update.effective_chat.id, conn, user, wanted)
+    except psycopg.Error:
+        log.exception("database unavailable on a focus button")
+        await query.answer()
+        await send(context.bot, update.effective_chat.id, messages.database_unavailable())
+        return
+    try:
+        # The confirmation says what the focus is now; leaving the list under it invites a
+        # second tap on a message that no longer shows the truth.
+        await query.edit_message_reply_markup(reply_markup=None)
+    except TelegramError:
+        log.warning("could not remove the chapter buttons", exc_info=True)
 
 
 async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -452,6 +547,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 MENU = [
     BotCommand("practice", "Oefen nu een setje"),
     BotCommand("grammar", "Oefen alleen de zinnen"),
+    BotCommand("focus", "Kies waar nieuwe woorden vandaan komen"),
     BotCommand("stand", "Hoe staan jullie er deze week voor"),
     BotCommand("volgorde", "Welke onderwerpen komen eraan"),
     BotCommand("help", "Hoe werkt deze bot?"),
@@ -523,12 +619,14 @@ def build_application(settings: Settings, secrets: Secrets, users: Sequence[User
     app.add_handler(CommandHandler("start", on_start, filters=known))
     app.add_handler(CommandHandler("practice", on_practice, filters=known))
     app.add_handler(CommandHandler("grammar", on_grammar, filters=known))
+    app.add_handler(CommandHandler("focus", on_focus, filters=known))
     app.add_handler(CommandHandler("stand", on_standings, filters=known))
     app.add_handler(CommandHandler("volgorde", on_order, filters=known))
     app.add_handler(CommandHandler("help", on_help, filters=known))
     app.add_handler(CallbackQueryHandler(on_intro_pressed, pattern=r"^intro:\d+$"))
     app.add_handler(CallbackQueryHandler(on_gap_pressed, pattern=r"^gap:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(on_override_pressed, pattern=r"^ok:\d+$"))
+    app.add_handler(CallbackQueryHandler(on_focus_pressed, pattern=r"^focus:"))
     app.add_handler(MessageHandler(known & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(on_error)
     return app

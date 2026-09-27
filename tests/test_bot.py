@@ -35,6 +35,7 @@ def make_context(settings):
     context = MagicMock()
     context.application.bot_data = {"deps": bot.Deps(settings=settings, secrets=secrets, scheduler=None)}
     context.bot = AsyncMock()
+    context.args = []  # what python-telegram-bot passes a command without arguments
     return context
 
 
@@ -540,3 +541,132 @@ def test_a_gap_button_for_another_card_changes_nothing(conn, settings, user, add
     assert conn.execute("SELECT count(*) AS n FROM french.reviews").fetchone()["n"] == 0
     assert db.get_bot_state(conn, user_id=user.id).pending_card_id == pending
     context.bot.send_message.assert_not_awaited()
+
+
+# --- /focus ----------------------------------------------------------------------------------
+
+
+def focus_update(user):
+    update = MagicMock()
+    update.effective_user.id = user.telegram_user_id
+    update.effective_chat.id = user.telegram_user_id
+    return update
+
+
+def two_chapters(add_items):
+    add_items([("le vélo", "de fiets")], theme_ref="theme/u4", theme_position=1,
+              name="A1.1 U4 · Transport")
+    add_items([("la chemise", "het overhemd")], theme_ref="theme/a15", theme_position=6,
+              name="A1.5 · Les vêtements")
+
+
+def sent(context):
+    return context.bot.send_message.await_args.kwargs
+
+
+def test_focus_without_an_argument_offers_the_chapters(conn, settings, user, add_items, monkeypatch):
+    two_chapters(add_items)
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    context = make_context(settings)
+
+    asyncio.run(bot.on_focus(focus_update(user), context))
+
+    assert "Waar komen je nieuwe woorden vandaan?" in sent(context)["text"]
+    buttons = [b for row in sent(context)["reply_markup"].inline_keyboard for b in row]
+    assert [b.callback_data for b in buttons] == ["focus:A1.1 U4", "focus:A1.5", "focus:"]
+    assert buttons[0].text == "A1.1 U4 · 0/2"  # name and how far along you are
+    assert buttons[-1].text == messages.BUTTON_NO_FOCUS
+
+
+def test_focus_with_a_chapter_sets_it_right_away(conn, settings, user, add_items, monkeypatch):
+    two_chapters(add_items)
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    context = make_context(settings)
+    context.args = ["a1.5"]  # lower case: this is typed on a phone
+
+    asyncio.run(bot.on_focus(focus_update(user), context))
+
+    assert db.user_by_telegram_id(conn, user.telegram_user_id).focus == "A1.5"
+    assert "Focus staat op <b>A1.5</b>" in sent(context)["text"]
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=NOW).french == ["la chemise"]
+
+
+def test_focus_on_an_unknown_chapter_changes_nothing_and_shows_the_list(
+    conn, settings, user, add_items, monkeypatch
+):
+    two_chapters(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    context = make_context(settings)
+    context.args = ["A9"]
+
+    asyncio.run(bot.on_focus(focus_update(user), context))
+
+    assert db.user_by_telegram_id(conn, user.telegram_user_id).focus == "A1.5"
+    assert "Ik ken geen hoofdstuk <b>A9</b>" in sent(context)["text"]
+    assert sent(context)["reply_markup"] is not None
+
+
+def test_focus_warns_when_the_chapter_has_nothing_new_left(
+    conn, settings, user, add_items, monkeypatch
+):
+    two_chapters(add_items)
+    for card_id in [
+        row["id"]
+        for row in conn.execute(
+            "SELECT c.id FROM french.cards c JOIN french.items i ON i.id = c.item_id"
+            " JOIN french.themes t ON t.id = i.theme_id WHERE t.chapter = 'A1.5'"
+        )
+    ]:
+        db.introduce_card(conn, card_id, NOW, user_id=user.id)
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    context = make_context(settings)
+    context.args = ["A1.5"]
+
+    asyncio.run(bot.on_focus(focus_update(user), context))
+
+    assert "geen nieuwe meer bij" in sent(context)["text"]
+
+
+def test_focus_button_sets_the_chapter_and_takes_the_list_away(
+    conn, settings, user, add_items, monkeypatch
+):
+    two_chapters(add_items)
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = focus_update(user)
+    update.callback_query.data = "focus:A1.5"
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_reply_markup = AsyncMock()
+    context = make_context(settings)
+
+    asyncio.run(bot.on_focus_pressed(update, context))
+
+    assert db.user_by_telegram_id(conn, user.telegram_user_id).focus == "A1.5"
+    update.callback_query.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+
+
+def test_the_no_focus_button_clears_it(conn, settings, user, add_items, monkeypatch):
+    two_chapters(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    update = focus_update(user)
+    update.callback_query.data = "focus:"
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_reply_markup = AsyncMock()
+    context = make_context(settings)
+
+    asyncio.run(bot.on_focus_pressed(update, context))
+
+    assert db.user_by_telegram_id(conn, user.telegram_user_id).focus is None
+    assert sent(context)["text"] == messages.focus_cleared()
+
+
+def test_study_order_names_the_focus(conn, settings, user, add_items, monkeypatch):
+    two_chapters(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+    monkeypatch.setattr(bot.db, "connect", lambda url: nullcontext(conn))
+    context = make_context(settings)
+
+    asyncio.run(bot.on_order(focus_update(user), context))
+
+    assert "🎯 Focus: <b>A1.5</b>" in sent(context)["text"]

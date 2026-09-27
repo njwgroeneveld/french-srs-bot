@@ -11,6 +11,8 @@ and schedules the card accordingly.
 - Daily goal of 15 cards: reviews first, one new word leads each batch, at most 8 new words per day
   unless there are too few reviews to reach the goal.
 - A new word goes through learning steps (right away → +4h → +1 day) before FSRS takes over.
+- `/focus` picks the chapter new words are drawn from (the unit you are doing in class, say);
+  reviews keep coming from everywhere.
 - The two directions of a word are separate cards and never come up on the same day.
 - Progress lives in Postgres (schema `french`); migrations run automatically at startup.
 

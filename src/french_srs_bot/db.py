@@ -9,7 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from .models import BotState, CardView, DayStats, SrsState, ThemeProgress, User
+from .models import BotState, CardView, ChapterProgress, DayStats, SrsState, ThemeProgress, User
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "db" / "migrations"
 
@@ -57,7 +57,9 @@ def run_migrations(conn: psycopg.Connection, directory: Path = MIGRATIONS_DIR) -
 
 # --- users ---------------------------------------------------------------------------------
 
-_USER_COLUMNS = "id, telegram_user_id, name, daily_goal, daily_new, batch_size, last_announcement"
+_USER_COLUMNS = (
+    "id, telegram_user_id, name, daily_goal, daily_new, batch_size, last_announcement, focus"
+)
 
 
 def _user_from_row(row: dict) -> User:
@@ -69,6 +71,7 @@ def _user_from_row(row: dict) -> User:
         daily_new=row["daily_new"],
         batch_size=row["batch_size"],
         last_announcement=row["last_announcement"],
+        focus=row["focus"],
     )
 
 
@@ -338,12 +341,20 @@ def next_new_card(
 ) -> CardView | None:
     # A secondary card (nl_fr, translate) only follows once its primary (fr_nl, gap) was
     # introduced on an earlier day and is not due right now.
+    #
+    # The focus is read here instead of being passed in: every caller already scopes by
+    # user_id, and threading one WHERE clause through session and bot would touch five call
+    # sites for nothing. It deliberately narrows new cards only -- reviews follow the planning.
     row = conn.execute(
         _CARD_SELECT
         + """
         WHERE c.user_id = %(user_id)s
           AND (%(kind)s::text IS NULL OR i.kind = %(kind)s::text)
           AND c.introduced_at IS NULL
+          AND EXISTS (
+              SELECT 1 FROM french.users u
+              WHERE u.id = c.user_id AND (u.focus IS NULL OR u.focus = t.chapter)
+          )
           AND """
         + _SIBLING_NOT_REVIEWED_TODAY
         + """
@@ -516,6 +527,51 @@ def theme_progress(conn: psycopg.Connection, *, user_id: int) -> list[ThemeProgr
         )
         for row in rows
     ]
+
+
+def chapters(conn: psycopg.Connection, *, user_id: int) -> list[ChapterProgress]:
+    """The chapters new cards can be drawn from, in study order, with this user's progress.
+
+    A chapter groups the themes of one unit ("A1.5"), of the verb lists ("Werkwoorden") or of
+    a level ("A0"); themes.chapter derives it from the theme name (migration 007).
+    """
+    rows = conn.execute(
+        """
+        SELECT t.chapter, min(t.position) AS position, count(c.id) AS cards,
+               count(*) FILTER (WHERE c.introduced_at IS NOT NULL) AS started
+        FROM french.themes t
+        JOIN french.items i ON i.theme_id = t.id
+        JOIN french.cards c ON c.item_id = i.id AND c.user_id = %(user)s
+        WHERE t.chapter IS NOT NULL
+        GROUP BY t.chapter
+        ORDER BY min(t.position)
+        """,
+        {"user": user_id},
+    ).fetchall()
+    return [
+        ChapterProgress(
+            name=row["chapter"], position=row["position"], cards=row["cards"], started=row["started"]
+        )
+        for row in rows
+    ]
+
+
+def resolve_chapter(conn: psycopg.Connection, text: str) -> str | None:
+    """The chapter written exactly as it is stored, or None when there is no such chapter.
+
+    Case and surrounding spaces are forgiven: "/switch a1.5" is what you type on a phone.
+    """
+    row = conn.execute(
+        "SELECT DISTINCT chapter FROM french.themes"
+        " WHERE lower(chapter) = lower(%s) ORDER BY chapter LIMIT 1",
+        (text.strip(),),
+    ).fetchone()
+    return row["chapter"] if row else None
+
+
+def set_focus(conn: psycopg.Connection, *, user_id: int, chapter: str | None) -> None:
+    """Point this user's new cards at one chapter, or at everything again with None."""
+    conn.execute("UPDATE french.users SET focus = %s WHERE id = %s", (chapter, user_id))
 
 
 

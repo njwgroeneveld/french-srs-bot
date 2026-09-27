@@ -400,3 +400,98 @@ def test_clear_pending_only_clears_its_own_card(conn, add_items):
 
     assert db.get_bot_state(conn, user_id=niels.id).pending_card_id is None
     assert db.get_bot_state(conn, user_id=inga.id).pending_card_id == for_inga
+
+
+# --- focus: which chapter new cards come from (migration 007) --------------------------------
+
+
+def add_two_chapters(add_items):
+    """A chapter that is on its way (U4) and a new one (A1.5), in that study order."""
+    add_items([("le vélo", "de fiets")], theme_ref="theme/u4", theme_position=1,
+              name="A1.1 U4 · Transport")
+    add_items([("la chemise", "het overhemd")], theme_ref="theme/a15", theme_position=6,
+              name="A1.5 · Les vêtements")
+
+
+def test_chapter_comes_from_the_theme_name(conn, add_items):
+    add_two_chapters(add_items)
+    add_items([("le chat", "de kat")], theme_ref="theme/kwiziq", theme_position=1001, name="Pets")
+    rows = conn.execute(
+        "SELECT name, chapter FROM french.themes ORDER BY position"
+    ).fetchall()
+    # Everything before the ' · ' is the chapter; a name without one falls back to its level.
+    assert [(r["name"], r["chapter"]) for r in rows] == [
+        ("A1.1 U4 · Transport", "A1.1 U4"),
+        ("A1.5 · Les vêtements", "A1.5"),
+        ("Pets", "A0"),
+    ]
+
+
+def test_focus_limits_new_cards_to_one_chapter(conn, user, add_items):
+    add_two_chapters(add_items)
+    # Without a focus the order decides, so U4 comes first.
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START).french == ["le vélo"]
+
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START).french == ["la chemise"]
+
+
+def test_focus_on_an_exhausted_chapter_gives_no_new_card(conn, user, add_items):
+    add_two_chapters(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+    for _ in range(2):  # both directions of the only word in A1.5
+        card = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+        if card is None:
+            break
+        db.introduce_card(conn, card.card_id, NOW, user_id=user.id)
+
+    # Deliberately nothing from U4: a focus narrows, it does not fall through.
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START) is None
+
+
+def test_focus_leaves_reviews_alone(conn, user, add_items):
+    add_two_chapters(add_items)
+    (u4_item,) = add_items([("le vélo", "de fiets")], theme_ref="theme/u4", theme_position=1,
+                           name="A1.1 U4 · Transport")
+    make_due(conn, card_ids(conn, u4_item)["fr_nl"], introduced_at=DAY_START - timedelta(days=2), due=NOW)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+
+    due = db.due_cards(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+
+    assert [c.french for c in due] == [["le vélo"]]
+
+
+def test_focus_is_per_user(conn, add_items):
+    niels, inga = two_users(conn)
+    add_two_chapters(add_items)
+    db.set_focus(conn, user_id=niels.id, chapter="A1.5")
+
+    assert db.next_new_card(conn, user_id=niels.id, now=NOW, day_start=DAY_START).french == ["la chemise"]
+    assert db.next_new_card(conn, user_id=inga.id, now=NOW, day_start=DAY_START).french == ["le vélo"]
+
+
+def test_clearing_the_focus_restores_the_normal_order(conn, user, add_items):
+    add_two_chapters(add_items)
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+    db.set_focus(conn, user_id=user.id, chapter=None)
+
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START).french == ["le vélo"]
+    assert db.user_by_telegram_id(conn, 42).focus is None
+
+
+def test_chapters_lists_progress_in_study_order(conn, user, add_items):
+    add_two_chapters(add_items)
+    first = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+    db.introduce_card(conn, first.card_id, NOW, user_id=user.id)
+
+    chapters = db.chapters(conn, user_id=user.id)
+
+    assert [(c.name, c.cards, c.started) for c in chapters] == [("A1.1 U4", 2, 1), ("A1.5", 2, 0)]
+
+
+def test_resolve_chapter_forgives_case_and_spaces(conn, add_items):
+    add_two_chapters(add_items)
+    assert db.resolve_chapter(conn, " a1.5 ") == "A1.5"
+    assert db.resolve_chapter(conn, "A1.5") == "A1.5"
+    assert db.resolve_chapter(conn, "A9") is None

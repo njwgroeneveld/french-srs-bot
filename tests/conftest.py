@@ -77,9 +77,11 @@ def add_items(conn):
     explicit dependency from here is needed to get the ordering right.
     """
 
-    def _add(pairs, theme_ref="theme/1", theme_position=1):
+    def _add(pairs, theme_ref="theme/1", theme_position=1, name="Test"):
+        # The name matters for migration 007: themes.chapter is everything before the ' · ',
+        # so a test about chapters passes a name like "A1.5 · Les couleurs".
         theme_id = db.upsert_theme(
-            conn, source="test", source_ref=theme_ref, level="A0", name="Test", position=theme_position
+            conn, source="test", source_ref=theme_ref, level="A0", name=name, position=theme_position
         )
         item_ids = [
             db.upsert_item(

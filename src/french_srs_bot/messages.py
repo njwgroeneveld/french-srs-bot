@@ -7,11 +7,12 @@ from datetime import time
 from html import escape
 
 from .grading import GradeResult
-from .models import CardView, DayStats, ThemeProgress
+from .models import CardView, ChapterProgress, DayStats, ThemeProgress
 from .session import Standing
 
 BUTTON_UNDERSTOOD = "👍 Begrepen"
 BUTTON_OVERRIDE = "✅ Toch goed"
+BUTTON_NO_FOCUS = "Geen focus — gewone volgorde"
 
 # Short release notes, pushed once to everyone who has not seen them. Numbers only go up:
 # add one at the bottom and it goes out on the next start. Nothing is ever sent twice,
@@ -44,6 +45,15 @@ ANNOUNCEMENTS: tuple[tuple[int, str], ...] = (
         "<i>vous</i>-vorm.\n\n"
         "Na je antwoord zie je de hele zin met de vertaling eronder, hoor je hem uitgesproken, "
         "en staat erbij waarom het die vorm is.",
+    ),
+    (
+        4,
+        "🆕 <b>Zelf kiezen waar je aan werkt</b>\n\n"
+        "<b>/focus</b> — kies het hoofdstuk waar je nieuwe woorden uit komen, bijvoorbeeld het "
+        "hoofdstuk dat deze week in de les aan de beurt is. Zonder focus houd ik gewoon de "
+        "volgorde van /volgorde aan.\n\n"
+        "Je herhalingen veranderen er niet van: die blijven komen wanneer ze gepland staan, "
+        "uit welk hoofdstuk ze ook komen.",
     ),
 )
 
@@ -86,6 +96,7 @@ def help_text(batch_times: Sequence[time], goal: int) -> str:
         "<b>Commando's</b>\n"
         "/practice — oefen nu een setje\n"
         "/grammar — oefen alleen de zinnen\n"
+        "/focus — kies waar nieuwe woorden vandaan komen\n"
         "/stand — hoe staan jullie er deze week voor\n"
         "/help — dit bericht\n\n"
         "<b>Wat de tekens betekenen</b>\n"
@@ -100,11 +111,16 @@ def help_text(batch_times: Sequence[time], goal: int) -> str:
     )
 
 
-def study_order(themes: Sequence[ThemeProgress]) -> str:
+def study_order(themes: Sequence[ThemeProgress], focus: str | None = None) -> str:
     """The themes in the order new words are drawn from them, and how far along you are."""
     if not themes:
         return "Er staan nog geen woorden in de database."
-    lines = ["📋 <b>Oefenvolgorde</b>", ""]
+    lines = ["📋 <b>Oefenvolgorde</b>"]
+    if focus:
+        # Without this line the list contradicts what you get: with a focus, new words come
+        # from that chapter alone, wherever its themes sit in this order.
+        lines.append(f"🎯 Focus: <b>{escape(focus)}</b> — nieuwe woorden komen hier alleen uit")
+    lines.append("")
     for theme in themes:
         if theme.started == theme.cards:
             mark = "✅"
@@ -118,7 +134,52 @@ def study_order(themes: Sequence[ThemeProgress]) -> str:
         "<i>Nieuwe woorden komen van boven naar beneden. Herhalingen lopen daar dwars "
         "doorheen: die gaan altijd voor.</i>"
     )
+    if focus:
+        lines.append("<i>Een ander hoofdstuk kiezen? /focus</i>")
     return "\n".join(lines)
+
+
+def focus_button(chapter: ChapterProgress, *, current: bool) -> str:
+    """The label on one chapter button: its name, how far you are, and a tick on the current one."""
+    return f"{'✓ ' if current else ''}{chapter.name} · {chapter.started}/{chapter.cards}"
+
+
+def focus_prompt(chapters: Sequence[ChapterProgress], current: str | None) -> str:
+    """The question above the chapter buttons."""
+    if not chapters:
+        return "Er staan nog geen hoofdstukken in de database."
+    now = f"<b>{escape(current)}</b>" if current else "<b>geen focus</b>, de gewone volgorde"
+    return (
+        "🎯 <b>Waar komen je nieuwe woorden vandaan?</b>\n\n"
+        f"Nu: {now}\n\n"
+        "<i>Dit gaat alleen over nieuwe woorden. Herhalingen blijven komen wanneer ze "
+        "gepland staan, uit welk hoofdstuk ze ook komen.</i>"
+    )
+
+
+def focus_set(chapter: str, *, exhausted: bool = False) -> str:
+    text = (
+        f"🎯 Focus staat op <b>{escape(chapter)}</b>.\n\n"
+        "Nieuwe woorden komen nu alleen nog hieruit. Je herhalingen lopen gewoon door."
+    )
+    if exhausted:
+        # Without this you would be left wondering why /practice only serves reviews.
+        text += (
+            "\n\n⚠️ Let op: uit dit hoofdstuk zijn alle woorden al geïntroduceerd, dus er "
+            "komen voorlopig geen nieuwe meer bij. Kies een ander hoofdstuk met /focus."
+        )
+    return text + "\n\nOefenen? /practice"
+
+
+def focus_cleared() -> str:
+    return (
+        "🎯 De focus staat eraf. Nieuwe woorden komen weer in de gewone volgorde.\n"
+        "Welke dat is, zie je met /volgorde."
+    )
+
+
+def focus_unknown(text: str) -> str:
+    return f"Ik ken geen hoofdstuk <b>{escape(text)}</b>. Kies er een uit deze lijst:"
 
 
 def intro(card: CardView) -> str:
