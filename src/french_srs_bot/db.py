@@ -340,9 +340,15 @@ def next_new_card(
     day_start: datetime,
     kind: str | None = None,
     shuffle_seed: str | None = None,
+    card_id: int | None = None,
 ) -> CardView | None:
     # A secondary card (nl_fr, translate) only follows once its primary (fr_nl, gap) was
     # introduced on an earlier day and is not due right now.
+    #
+    # `card_id` narrows the question to "may *this* card be the new one right now?" -- what the
+    # intro button needs. Asking by id rather than comparing against a fresh pick matters
+    # because of the shuffle below: with a focus set, two calls a second apart return different
+    # cards, so the card an intro offered would almost never survive a second pick.
     #
     # The focus is read here instead of being passed in: every caller already scopes by
     # user_id, and threading one WHERE clause through session and bot would touch five call
@@ -361,6 +367,7 @@ def next_new_card(
         + """
         WHERE c.user_id = %(user_id)s
           AND (%(kind)s::text IS NULL OR i.kind = %(kind)s::text)
+          AND (%(card_id)s::bigint IS NULL OR c.id = %(card_id)s::bigint)
           AND c.introduced_at IS NULL
           AND EXISTS (
               SELECT 1 FROM french.users u
@@ -392,6 +399,7 @@ def next_new_card(
             "day_start": day_start,
             "user_id": user_id,
             "kind": kind,
+            "card_id": card_id,
             "shuffle_seed": shuffle_seed if shuffle_seed is not None else uuid4().hex,
         },
     ).fetchone()

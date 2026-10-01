@@ -190,6 +190,31 @@ def test_stale_intro_button_is_ignored(conn, settings, add_items, user):
     assert session.acknowledge_intro(conn, settings, other.card_id, MORNING, user_id=user.id) is None
 
 
+def test_intro_button_works_with_a_focus_on_a_chapter_of_several_themes(
+    conn, settings, scheduler, add_items, user
+):
+    """The card the intro offered must stay acceptable when "Begrepen" comes back.
+
+    With a focus set, db.next_new_card shuffles the themes afresh on every call, so a guard
+    that re-picks instead of asking about this card refuses almost every intro - and the batch
+    stops dead on a new word. Ten themes make that chance 90% per run.
+    """
+    for position in range(1, 11):
+        add_items(
+            [(f"mot{position}", f"woord{position}")],
+            theme_ref=f"theme/{position}",
+            theme_position=position,
+            name=f"A1.5 · Thema {position}",
+        )
+    db.set_focus(conn, user_id=user.id, chapter="A1.5")
+
+    step = session.start_batch(conn, settings, user.id, MORNING)
+    assert step.is_new
+    assert session.acknowledge_intro(conn, settings, step.card.card_id, MORNING, user_id=user.id) is not None
+    answered = session.answer(conn, settings, scheduler, "x", MORNING, user_id=user.id)
+    assert answered is not None and answered.card.card_id == step.card.card_id
+
+
 def test_stale_intro_button_respects_eligibility(conn, settings, scheduler, add_items, user):
     (item,) = add_items([("le chien", "de hond")])
     fr_nl = card_id(conn, item, "fr_nl", user.id)

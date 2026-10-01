@@ -67,19 +67,26 @@ def _eligible_now(
     user_id: int,
     now: datetime,
     kind: str | None = None,
+    *,
+    new_card_id: int | None = None,
 ) -> tuple[list[CardView], CardView | None]:
     """Due cards and the new card allowed right now (None when the new-card allowance is used up).
 
     Asking for one kind (/grammar) sets `kind` and lifts that allowance: a day spent on words
     would otherwise leave the sentences unreachable until tomorrow, which reads as "there is
     no grammar" rather than "not today".
+
+    `new_card_id` asks the same question about one specific card instead of letting the
+    database pick: "may this card be introduced now?".
     """
     start, end = day_bounds(now, settings.timezone)
     stats = db.day_stats(conn, user_id=user_id, day_start=start, day_end=end)
     due = db.due_cards(conn, user_id=user_id, now=now, day_start=start, kind=kind)
     new_allowed = max(settings.daily_new, settings.daily_goal - (stats.reviews + len(due)))
     new_card = (
-        db.next_new_card(conn, user_id=user_id, now=now, day_start=start, kind=kind)
+        db.next_new_card(
+            conn, user_id=user_id, now=now, day_start=start, kind=kind, card_id=new_card_id
+        )
         if kind is not None or stats.new < new_allowed
         else None
     )
@@ -175,9 +182,12 @@ def acknowledge_intro(
     if pending not in (None, card_id):
         return None
     if pending != card_id:
-        # Not the pending card: only accept it if it is exactly the new card that may be introduced now.
-        _due, new_card = _eligible_now(conn, settings, user_id, now)
-        if new_card is None or new_card.card_id != card_id:
+        # Not the pending card: only accept it if it is a new card that may be introduced now.
+        # The question is about this card, not about whichever card a fresh pick returns: with
+        # a focus set the themes are reshuffled on every call, so comparing the two would
+        # refuse the bot's own intro button and leave the batch standing still.
+        _due, new_card = _eligible_now(conn, settings, user_id, now, new_card_id=card_id)
+        if new_card is None:
             return None
     with conn.transaction():
         db.introduce_card(conn, card_id, now, user_id=user_id)
