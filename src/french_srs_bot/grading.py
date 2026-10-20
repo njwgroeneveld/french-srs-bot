@@ -65,6 +65,17 @@ def strip_article(text: str, lang: Lang) -> str:
     return text
 
 
+_NUMBER = re.compile(r"[0-9]+(?:[. ][0-9]{3})*")
+
+
+def as_number(text: str) -> str | None:
+    """The digits of a typed number with its thousands separators dropped, or None.
+
+    "1.000" and "1 000" are both 1000: a Dutch keyboard and a French book write it differently.
+    """
+    return re.sub(r"[. ]", "", text) if _NUMBER.fullmatch(text) else None
+
+
 def levenshtein(a: str, b: str) -> int:
     previous = list(range(len(b) + 1))
     for i, char_a in enumerate(a, start=1):
@@ -84,6 +95,13 @@ def levenshtein(a: str, b: str) -> int:
 def _compare(answer: str, expected: str, lang: Lang, typo_min_length: int) -> tuple[Grade, Reason]:
     if answer == expected:
         return Grade.CORRECT, "exact"
+    expected_number = as_number(expected)
+    if expected_number is not None:
+        # A number is right or wrong. The typo rule would forgive 100 for 1000 (one character,
+        # four long), and one digit off is simply another number.
+        if as_number(answer) == expected_number:
+            return Grade.CORRECT, "exact"
+        return Grade.WRONG, "wrong"
     answer_plain, expected_plain = strip_accents(answer), strip_accents(expected)
     if answer_plain == expected_plain:
         return Grade.ALMOST, "accent"

@@ -78,3 +78,38 @@ def test_helpers():
 
 def test_grade_is_a_str_enum():
     assert f"{Grade.CORRECT}" == "correct"
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_grade"),
+    [
+        # the digits are an accepted answer of their own, next to the words
+        ("352", Grade.CORRECT),
+        ("driehonderdtweeënvijftig", Grade.CORRECT),
+        # one digit off is another number, not a typo
+        ("353", Grade.WRONG),
+        ("35", Grade.WRONG),
+    ],
+)
+def test_number_typed_as_digits(answer, expected_grade):
+    accepted = ["driehonderdtweeënvijftig", "352"]
+    assert grade(answer, accepted, "nl").grade is expected_grade
+
+
+@pytest.mark.parametrize("answer", ["1000", "1.000", "1 000", "1.000."])
+def test_thousands_separators_do_not_matter(answer):
+    result = grade(answer, ["duizend", "1000"], "nl")
+    assert (result.grade, result.reason) == (Grade.CORRECT, "exact")
+
+
+def test_a_missing_zero_is_not_a_small_typo():
+    # 100 for 1000 is one character off and four long, which the typo rule would forgive.
+    # A factor ten is not a slip of the finger.
+    result = grade("100", ["duizend", "1000"], "nl")
+    assert result.grade is Grade.WRONG
+    assert result.expected == "duizend"  # the feedback still shows the word, not the digits
+
+
+def test_digits_only_count_where_the_card_accepts_them():
+    # Cards without a digit answer are untouched: typing a number there stays wrong.
+    assert grade("2", ["twee"], "nl").grade is Grade.WRONG
