@@ -79,18 +79,28 @@ GROUP BY t.id, t.position, t.source, t.name ORDER BY t.position;
 """
 
 
-def grammar_sql(theme: ThemeFile) -> str:
+def grammar_sql(themes: list[ThemeFile]) -> str:
+    """Themes, items and a gap/translate card pair per user, for one or more grammar themes.
+
+    Unlike vocab, the cards are written here: a grammar item needs both directions and the
+    pair is fixed, so there is nothing for db.sync_cards to work out later.
+    """
     rows = [
-        f"  ({position}, {arr(item.french)}, {arr(item.dutch)}, {q(item.sentence)},"
+        f"  ({q(t.source)}, {q(t.source_ref)}, {q(t.level)}, {q(t.name)}, {t.position},"
+        f" {q(t.lesson)}, {arr(t.choices) if t.choices else 'NULL::text[]'},"
+        f" {position}, {arr(item.french)}, {arr(item.dutch)}, {q(item.sentence)},"
         f" {q(item.gap_answer)}, {q(item.rule)}, {q(item.hint)})"
-        for position, item in enumerate(theme.items, start=1)
+        for t in themes
+        for position, item in enumerate(t.items, start=1)
     ]
     staging_values = ",\n".join(rows)
-    sql = f"""-- {theme.name}: themes, items and cards. Safe to run more than once.
--- Paste into the Supabase SQL editor and run everything at once.
+    names = ", ".join(f"{t.position}: {t.name}" for t in themes)
+    return f"""-- {names}
+-- Thema's, items en per gebruiker een gap/translate-paar. Veilig om vaker te draaien.
+-- Plak dit in de Supabase SQL-editor en draai alles in een keer.
 
--- 1. Migration 006 may not have run yet; apply it if needed and record it, so the bot's
--- migration runner does not try to add the same columns again.
+-- 1. Migratie 006 is misschien nog niet gedraaid; pas hem toe en noteer dat, zodat de
+-- migratierunner van de bot niet dezelfde kolommen nog eens probeert toe te voegen.
 ALTER TABLE french.items ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'vocab';
 ALTER TABLE french.items ADD COLUMN IF NOT EXISTS sentence text;
 ALTER TABLE french.items ADD COLUMN IF NOT EXISTS gap_answer text;
@@ -99,8 +109,8 @@ ALTER TABLE french.themes ADD COLUMN IF NOT EXISTS choices text[];
 ALTER TABLE french.reviews ADD COLUMN IF NOT EXISTS prev_state jsonb;
 ALTER TABLE french.reviews ADD COLUMN IF NOT EXISTS overridden boolean NOT NULL DEFAULT false;
 ALTER TABLE french.bot_state ADD COLUMN IF NOT EXISTS batch_kind text;
--- The CHECKs 006 writes inline in its ADD COLUMNs, under the names PostgreSQL gives those,
--- so a database loaded here ends up identical to a normally migrated one.
+-- De CHECKs die 006 inline in zijn ADD COLUMNs schrijft, onder de namen die PostgreSQL
+-- daaraan geeft, zodat een hier geladen database identiek is aan een normaal gemigreerde.
 ALTER TABLE french.items DROP CONSTRAINT IF EXISTS items_kind_check;
 ALTER TABLE french.items ADD CONSTRAINT items_kind_check
     CHECK (kind IN ('vocab', 'grammar'));
@@ -112,26 +122,26 @@ ALTER TABLE french.cards ADD CONSTRAINT cards_direction_check
     CHECK (direction IN ('fr_nl', 'nl_fr', 'gap', 'translate'));
 INSERT INTO french.schema_migrations (version) VALUES ('006_grammar') ON CONFLICT DO NOTHING;
 
--- 2. The theme, its items and a card pair per user, in one statement.
-WITH staging (item_position, french, dutch, sentence, gap_answer, rule, hint) AS (
+-- 2. De thema's, hun items en de kaarten, in een statement.
+WITH staging (source, source_ref, level, name, theme_position, lesson, choices,
+              item_position, french, dutch, sentence, gap_answer, rule, hint) AS (
   VALUES
 {staging_values}
 ),
-upserted_theme AS (
+upserted_themes AS (
   INSERT INTO french.themes (source, source_ref, level, name, position, lesson, choices)
-  VALUES ({q(theme.source)}, {q(theme.source_ref)}, {q(theme.level)}, {q(theme.name)},
-          {theme.position}, {q(theme.lesson)}, {arr(theme.choices)})
+  SELECT DISTINCT source, source_ref, level, name, theme_position, lesson, choices FROM staging
   ON CONFLICT (source, source_ref) DO UPDATE
   SET level = EXCLUDED.level, name = EXCLUDED.name, position = EXCLUDED.position,
       lesson = EXCLUDED.lesson, choices = EXCLUDED.choices
-  RETURNING id
+  RETURNING id, source, source_ref
 ),
 upserted_items AS (
   INSERT INTO french.items
       (theme_id, position, french, dutch, english, gender, hint, kind, sentence, gap_answer, rule)
   SELECT t.id, s.item_position, s.french, s.dutch, NULL, NULL, s.hint,
          'grammar', s.sentence, s.gap_answer, s.rule
-  FROM staging s CROSS JOIN upserted_theme t
+  FROM staging s JOIN upserted_themes t ON t.source = s.source AND t.source_ref = s.source_ref
   ON CONFLICT (theme_id, (french[1])) DO UPDATE
   SET position = EXCLUDED.position, french = EXCLUDED.french, dutch = EXCLUDED.dutch,
       hint = EXCLUDED.hint, kind = EXCLUDED.kind, sentence = EXCLUDED.sentence,
@@ -146,17 +156,17 @@ new_cards AS (
   ON CONFLICT (user_id, item_id, direction) DO NOTHING
   RETURNING id
 )
-SELECT (SELECT count(*) FROM upserted_items) AS items_written,
+SELECT (SELECT count(*) FROM upserted_themes) AS themes_written,
+       (SELECT count(*) FROM upserted_items) AS items_written,
        (SELECT count(*) FROM new_cards) AS cards_added;
 
--- 3. What is in the database now
-SELECT t.position, t.name, t.kind_label, t.items FROM (
-  SELECT t.position, t.name, max(i.kind) AS kind_label, count(i.id) AS items
+-- 3. Wat staat er nu in de database?
+SELECT t.position, t.chapter, t.name, t.kind_label, t.items FROM (
+  SELECT t.position, t.chapter, t.name, max(i.kind) AS kind_label, count(i.id) AS items
   FROM french.themes t LEFT JOIN french.items i ON i.theme_id = t.id
-  GROUP BY t.id, t.position, t.name
+  GROUP BY t.id, t.position, t.chapter, t.name
 ) t ORDER BY t.position;
 """
-    return sql
 
 
 def main(out_path: str, yaml_paths: list[str]) -> None:
@@ -172,9 +182,7 @@ def main(out_path: str, yaml_paths: list[str]) -> None:
         # gap/translate pair itself. One file would have to do both halves conditionally.
         sys.exit(f"mixed kinds {sorted(kinds)}: generate one file per kind")
     if kinds == {"grammar"}:
-        if len(themes) > 1:
-            sys.exit("grammar themes go one per file: each writes its own migration preamble")
-        sql = grammar_sql(themes[0])
+        sql = grammar_sql(themes)
     else:
         sql = vocab_sql(themes)
     Path(out_path).write_text(sql, encoding="utf-8")
