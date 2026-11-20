@@ -67,7 +67,13 @@ async def send(bot: Bot, chat_id: int, text: str, markup: InlineKeyboardMarkup |
 
 
 async def send_with_voice(
-    bot: Bot, chat_id: int, conn: psycopg.Connection, card: CardView, text: str, settings: Settings
+    bot: Bot,
+    chat_id: int,
+    conn: psycopg.Connection,
+    card: CardView,
+    text: str,
+    settings: Settings,
+    markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     """Send `text` as the caption of a voice memo of this item's French word.
 
@@ -77,7 +83,8 @@ async def send_with_voice(
     if card.voice_file_id and card.voice_key == settings.tts.key:
         try:
             await bot.send_voice(
-                chat_id=chat_id, voice=card.voice_file_id, caption=text, parse_mode=ParseMode.HTML
+                chat_id=chat_id, voice=card.voice_file_id, caption=text, parse_mode=ParseMode.HTML,
+                reply_markup=markup,
             )
             return
         except TelegramError:
@@ -91,10 +98,11 @@ async def send_with_voice(
             voice=InputFile(BytesIO(audio), filename=f"{card.item_id}.ogg"),
             caption=text,
             parse_mode=ParseMode.HTML,
+            reply_markup=markup,
         )
     except Exception:  # a missing model, a broken voice, a refused upload: all the same here
         log.exception("no audio for card %s, the message goes as text", card.card_id)
-        await send(bot, chat_id, text)
+        await send(bot, chat_id, text, markup)
         return
 
     # The message is already out; forgetting the file_id only costs one extra synthesis later,
@@ -255,7 +263,14 @@ async def send_step(
         return
     if step.is_new:
         button = InlineKeyboardButton(messages.BUTTON_UNDERSTOOD, callback_data=f"intro:{step.card.card_id}")
-        await send(bot, chat_id, messages.intro(step.card), InlineKeyboardMarkup([[button]]))
+        markup = InlineKeyboardMarkup([[button]])
+        if settings.tts.enabled and step.card.kind == "sentence":
+            # A sentence is never asked FR->NL, so the intro is the only time it is heard
+            # before it has to be typed. A word's intro stays silent: its FR->NL question
+            # plays the sound right after.
+            await send_with_voice(bot, chat_id, conn, step.card, messages.intro(step.card), settings, markup)
+        else:
+            await send(bot, chat_id, messages.intro(step.card), markup)
         return
     if not session.mark_asked(conn, step.card, now, user_id=user_id):
         # Another card became pending meanwhile (e.g. a scheduled batch): that question stays open.

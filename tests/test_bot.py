@@ -670,3 +670,36 @@ def test_study_order_names_the_focus(conn, settings, user, add_items, monkeypatc
     asyncio.run(bot.on_order(focus_update(user), context))
 
     assert "🎯 Focus: <b>A1.5</b>" in sent(context)["text"]
+
+
+SENTENCE_CARD = CardView(
+    card_id=9, item_id=3, direction="nl_fr", french=["Il y a combien de pièces ?"],
+    dutch=["Hoeveel kamers zijn er?"], gender=None, hint=None, introduced_at=None, srs=None,
+    kind="sentence",
+)
+
+
+def test_a_new_sentence_is_introduced_with_its_french_sound_and_the_button(settings, monkeypatch):
+    monkeypatch.setattr(bot.tts, "synthesize", lambda text, tts_settings: b"OggS-fake")
+    monkeypatch.setattr(bot.db, "save_voice", lambda conn, **kwargs: None)
+    telegram_bot = AsyncMock()
+    telegram_bot.send_voice.return_value.voice.file_id = "zin"
+    step = session.Ask(card=SENTENCE_CARD, is_new=True)
+
+    asyncio.run(bot.send_step(telegram_bot, 42, object(), step, NOW, enable_tts(settings), user_id=1))
+
+    telegram_bot.send_message.assert_not_awaited()
+    kwargs = telegram_bot.send_voice.await_args.kwargs
+    assert kwargs["caption"] == messages.intro(SENTENCE_CARD)
+    button = kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.callback_data == "intro:9"
+
+
+def test_a_new_word_is_still_introduced_without_sound(settings, monkeypatch):
+    telegram_bot = AsyncMock()
+    step = session.Ask(card=replace(CARD, introduced_at=None), is_new=True)
+
+    asyncio.run(bot.send_step(telegram_bot, 42, object(), step, NOW, enable_tts(settings), user_id=1))
+
+    telegram_bot.send_voice.assert_not_awaited()
+    telegram_bot.send_message.assert_awaited_once()
