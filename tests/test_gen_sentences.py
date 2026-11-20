@@ -1,6 +1,7 @@
 """tools/gen_sentences.py: the sentences per goal from the Obsidian chapter notes, as theme YAML."""
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -166,16 +167,19 @@ def test_cli(vault, tmp_path, data_dir):
     out = data_dir / "sentences" / "u7"
     args = [sys.executable, str(TOOL), str(vault), str(out), "--unites", "7",
             "--chapter", "Zinnen U7", "--start-position", "2001", "--data-dir", str(data_dir)]
-    run = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
+    # The child process does not get pytest's `pythonpath`: in CI the package is not installed,
+    # so point it at src/ the same way pyproject.toml does for the tests themselves.
+    env = {**os.environ, "PYTHONPATH": str(TOOL.parents[1] / "src")}
+    run = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", env=env)
     assert run.returncode == 0, run.stderr
     assert "Zinnen U7 · S'informer sur un logement: 3" in run.stdout
     assert "overgeslagen" in run.stdout
     # a rerun does not count its own earlier output as already known
-    rerun = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
+    rerun = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", env=env)
     assert rerun.returncode == 0, rerun.stderr
     assert "Zinnen U7 · S'informer sur un logement: 3" in rerun.stdout
     path = out / "u7-s-informer-sur-un-logement.yaml"
     path.write_text(path.read_text(encoding="utf-8").replace("TODO", "Vertaald"), encoding="utf-8")
-    refused = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
+    refused = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", env=env)
     assert refused.returncode != 0
     assert "al vertaald" in refused.stderr
