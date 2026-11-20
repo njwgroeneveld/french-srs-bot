@@ -31,7 +31,7 @@ class ThemeFile:
     name: str
     position: int
     lesson: str | None = None  # e.g. the Obsidian lesson note this theme comes from
-    kind: str = "vocab"  # vocab or grammar
+    kind: str = "vocab"  # vocab, grammar or sentence
     choices: list[str] = field(default_factory=list)  # grammar: the buttons of this theme
     items: list[ThemeItem] = field(default_factory=list)
 
@@ -57,8 +57,8 @@ def read_theme_file(path: Path) -> ThemeFile:
     if not isinstance(raw.get("lesson"), (str, type(None))):
         raise ValueError(f"{path}: lesson must be a string or null, got {raw['lesson']!r}")
     kind = raw.get("kind", "vocab")
-    if kind not in ("vocab", "grammar"):
-        raise ValueError(f"{path}: kind must be vocab or grammar, got {kind!r}")
+    if kind not in ("vocab", "grammar", "sentence"):
+        raise ValueError(f"{path}: kind must be vocab, grammar or sentence, got {kind!r}")
     choices = raw.get("choices") or []
     # Choices are the buttons of a theme. A theme whose answers are too many to fit on buttons
     # (one conjugated form per sentence, say) leaves them out and is answered by typing, so the
@@ -68,8 +68,8 @@ def read_theme_file(path: Path) -> ThemeFile:
             f"{path}: grammar choices must be a list of at least two strings, or be left out"
             " entirely for a theme whose answers are typed"
         )
-    if kind == "vocab" and choices:
-        raise ValueError(f"{path}: choices belong to a grammar theme, not to a vocab one")
+    if kind != "grammar" and choices:
+        raise ValueError(f"{path}: choices belong to a grammar theme, not to a {kind} one")
     items = []
     seen: set[str] = set()
     for number, item in enumerate(raw["items"], start=1):
@@ -91,6 +91,10 @@ def read_theme_file(path: Path) -> ThemeFile:
                     f"{path}: item {number} {key} must be a non-empty list of strings, got {value!r}"
                     " (quote words like on/yes/no)"
                 )
+        # The sentence generator leaves `dutch: [TODO]` for the translation still to be written;
+        # loading that would teach the word TODO.
+        if any("TODO" in value for value in dutch):
+            raise ValueError(f"{path}: item {number} heeft nog geen vertaling")
         for key in ("english", "hint"):
             if not isinstance(item.get(key), (str, type(None))):
                 raise ValueError(f"{path}: item {number} {key} must be a string or null, got {item[key]!r}")

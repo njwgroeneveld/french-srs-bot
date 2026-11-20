@@ -318,3 +318,38 @@ def test_loading_a_grammar_theme_creates_both_cards(conn, user, tmp_path):
         for r in conn.execute("SELECT direction FROM french.cards ORDER BY direction")
     ]
     assert directions == ["gap", "translate"]
+
+
+SENTENCE_YAML = """\
+source: obsidian
+source_ref: Frans/Lessen/A1.1 U7.md#zinnen-1
+level: A1.1
+name: Zinnen U7 · S'informer sur un logement
+position: 30
+kind: sentence
+items:
+  - french: ["Il y a combien de pièces ?"]
+    dutch: ["Hoeveel kamers zijn er?"]
+"""
+
+
+def test_sentence_file_is_read(tmp_path):
+    theme = read_theme_file_from_text(SENTENCE_YAML, tmp_path)
+    assert theme.kind == "sentence"
+    assert theme.choices == []
+    assert theme.items[0].french == ["Il y a combien de pièces ?"]
+    assert theme.items[0].dutch == ["Hoeveel kamers zijn er?"]
+
+
+def test_sentence_file_rejects_choices(tmp_path):
+    text = SENTENCE_YAML.replace("kind: sentence\n", "kind: sentence\nchoices: [a, b]\n")
+    with pytest.raises(ValueError, match="choices"):
+        read_theme_file_from_text(text, tmp_path)
+
+
+@pytest.mark.parametrize("dutch", ["[TODO]", "[TODO hoeveel kamers]"])
+def test_sentence_file_rejects_an_untranslated_item(tmp_path, dutch):
+    """The generator leaves `dutch: [TODO]`; loading that would teach the word TODO."""
+    text = SENTENCE_YAML.replace("dutch: [\"Hoeveel kamers zijn er?\"]", f"dutch: {dutch}")
+    with pytest.raises(ValueError, match="item 1 heeft nog geen vertaling"):
+        read_theme_file_from_text(text, tmp_path)

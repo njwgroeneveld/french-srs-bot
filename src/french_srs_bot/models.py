@@ -7,10 +7,11 @@ from datetime import datetime
 from typing import Literal
 
 Direction = Literal["fr_nl", "nl_fr", "gap", "translate"]
-Kind = Literal["vocab", "grammar"]
+Kind = Literal["vocab", "grammar", "sentence"]
 
 # Per item kind: the card that is introduced first, and the one that follows a day later.
-PRIMARY: dict[str, str] = {"vocab": "fr_nl", "grammar": "gap"}
+# A sentence has only one card (Dutch -> French), so it has no secondary.
+PRIMARY: dict[str, str] = {"vocab": "fr_nl", "grammar": "gap", "sentence": "nl_fr"}
 SECONDARY: dict[str, str] = {"vocab": "nl_fr", "grammar": "translate"}
 
 

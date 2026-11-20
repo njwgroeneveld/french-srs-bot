@@ -537,3 +537,46 @@ def test_without_a_focus_the_theme_order_still_decides(conn, user, add_items):
 
     # No focus: U4 (position 1) comes before A1.5 (position 6), whatever the seed is.
     assert {first_new_french(conn, user, str(seed)) for seed in range(12)} == {"le vélo"}
+
+
+# --- sentence cards: one card per item, Dutch -> French only (migration 008) -----------------
+
+
+def add_sentence(conn, *, name="Zinnen U7 · S'informer sur un logement", position=30):
+    theme_id = db.upsert_theme(
+        conn, source="test", source_ref="theme/s1", level="A1.1", name=name, position=position
+    )
+    item_id = db.upsert_item(
+        conn, theme_id=theme_id, position=1, french=["Il y a combien de pièces ?"],
+        dutch=["Hoeveel kamers zijn er?"], english=None, gender=None, hint=None, kind="sentence",
+    )
+    db.sync_cards(conn)
+    return item_id
+
+
+def test_sentence_item_gets_only_a_dutch_to_french_card(conn):
+    db.claim_owner(conn, telegram_user_id=42, name="Niels")
+    conn.execute("INSERT INTO french.users (telegram_user_id, name) VALUES (99, 'Inga')")
+    item_id = add_sentence(conn)
+    rows = conn.execute(
+        "SELECT user_id, direction FROM french.cards WHERE item_id = %s ORDER BY user_id", (item_id,)
+    ).fetchall()
+    assert [r["direction"] for r in rows] == ["nl_fr", "nl_fr"]
+    assert len({r["user_id"] for r in rows}) == 2
+
+
+def test_next_new_card_offers_a_sentence_without_a_sibling(conn, user):
+    item_id = add_sentence(conn)
+    card = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+    assert (card.item_id, card.kind, card.direction) == (item_id, "sentence", "nl_fr")
+
+
+def test_focus_on_a_sentence_chapter_gives_only_its_sentences(conn, user, add_items):
+    add_items([("le vélo", "de fiets")], theme_ref="theme/u4", theme_position=1,
+              name="A1.1 U4 · Transport")
+    add_sentence(conn)
+    db.set_focus(conn, user_id=user.id, chapter="Zinnen U7")
+    card = db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START)
+    assert card.kind == "sentence"
+    db.introduce_card(conn, card.card_id, NOW, user_id=user.id)
+    assert db.next_new_card(conn, user_id=user.id, now=NOW, day_start=DAY_START) is None

@@ -70,3 +70,17 @@ def test_primary_and_secondary_per_kind():
     assert card("gap", kind="grammar").is_primary is True
     assert card("translate", kind="grammar").is_primary is False
     assert card("fr_nl").is_primary is True
+
+
+def test_sentence_card_asks_the_dutch_and_accepts_the_french():
+    sentence = card(
+        "nl_fr",
+        kind="sentence",
+        french=["Il y a combien de pièces ?"],
+        dutch=["Hoeveel kamers zijn er?"],
+    )
+    # Its only card: there is no fr_nl sibling to come first.
+    assert sentence.is_primary is True
+    assert sentence.question == "Hoeveel kamers zijn er?"
+    assert sentence.accepted == ["Il y a combien de pièces ?"]
+    assert sentence.answer_lang == "fr"

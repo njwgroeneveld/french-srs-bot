@@ -121,7 +121,9 @@ def mark_announcement_seen(conn: psycopg.Connection, *, user_id: int, announceme
 
 
 def sync_cards(conn: psycopg.Connection) -> int:
-    """Make sure every user has a card for every item in both directions, and a state row.
+    """Make sure every user has a card for every direction of every item, and a state row.
+
+    Words get fr_nl and nl_fr, grammar gets gap and translate, a sentence only nl_fr.
 
     Runs at startup. This is why upsert_item no longer creates cards itself: with more than
     one user, whoever adds an item cannot know who needs a card for it. Missing rows are
@@ -142,6 +144,7 @@ def sync_cards(conn: psycopg.Connection) -> int:
             CROSS JOIN french.items i
             CROSS JOIN LATERAL unnest(
                 CASE WHEN i.kind = 'grammar' THEN ARRAY['gap', 'translate']
+                     WHEN i.kind = 'sentence' THEN ARRAY['nl_fr']
                      ELSE ARRAY['fr_nl', 'nl_fr'] END
             ) AS d(direction)
             ON CONFLICT (user_id, item_id, direction) DO NOTHING
@@ -343,7 +346,8 @@ def next_new_card(
     card_id: int | None = None,
 ) -> CardView | None:
     # A secondary card (nl_fr, translate) only follows once its primary (fr_nl, gap) was
-    # introduced on an earlier day and is not due right now.
+    # introduced on an earlier day and is not due right now. A sentence has only its nl_fr
+    # card, with no primary to wait for, so it is let through on its own.
     #
     # `card_id` narrows the question to "may *this* card be the new one right now?" -- what the
     # intro button needs. Asking by id rather than comparing against a fresh pick matters
@@ -378,6 +382,7 @@ def next_new_card(
         + """
           AND (
               c.direction IN ('fr_nl', 'gap')
+              OR i.kind = 'sentence'
               OR EXISTS (
                   SELECT 1 FROM french.cards s
                   WHERE s.item_id = c.item_id AND s.direction IN ('fr_nl', 'gap')
