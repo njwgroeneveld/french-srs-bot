@@ -113,3 +113,39 @@ def test_a_missing_zero_is_not_a_small_typo():
 def test_digits_only_count_where_the_card_accepts_them():
     # Cards without a digit answer are untouched: typing a number there stays wrong.
     assert grade("2", ["twee"], "nl").grade is Grade.WRONG
+
+
+# --- sentences: milder about punctuation, two typos allowed in a long one --------------------
+
+PIECES = ["Il y a combien de pièces ?"]
+REZ = ["Au rez-de-chaussée, il y a une cuisine et un salon."]
+
+
+@pytest.mark.parametrize(
+    ("answer", "accepted", "expected_grade", "expected_reason"),
+    [
+        ("il y a combien de pieces", PIECES, Grade.ALMOST, "accent"),
+        ("Il y a combien de pièces?", PIECES, Grade.CORRECT, "exact"),
+        ("il y a combien de pièces", PIECES, Grade.CORRECT, "exact"),
+        # punctuation inside the sentence does not count
+        ("Au rez-de-chaussée il y a une cuisine et un salon", REZ, Grade.CORRECT, "exact"),
+        ("Au rez-de-chaussée ,  il y a une cuisine et un salon", REZ, Grade.CORRECT, "exact"),
+        # 24 characters after normalising: one or two typos are forgiven, three are not
+        ("Il y a combien de pièses", PIECES, Grade.HARD, "typo"),   # c -> s
+        ("Il y a conbien de pièses", PIECES, Grade.HARD, "typo"),   # + m -> n
+        ("Il y a conbien dr pièses", PIECES, Grade.WRONG, "wrong"), # + e -> r
+        # under 20 characters ("c'est loin"): still one typo at most
+        ("C'ezt loin", ["C'est loin ?"], Grade.HARD, "typo"),
+        ("C'ezt loim", ["C'est loin ?"], Grade.WRONG, "wrong"),
+    ],
+)
+def test_grade_sentence(answer, accepted, expected_grade, expected_reason):
+    result = grade(answer, accepted, "fr", sentence=True)
+    assert (result.grade, result.reason) == (expected_grade, expected_reason)
+    assert result.expected == accepted[0]  # feedback shows the sentence as written
+
+
+def test_words_keep_the_strict_rules():
+    # Without sentence=True a comma is still a typo, and two typos are wrong.
+    assert grade("Au rez-de-chaussée il y a une cuisine et un salon", REZ, "fr").grade == Grade.HARD
+    assert grade("Il y a conbien de pièses", PIECES, "fr").grade == Grade.WRONG

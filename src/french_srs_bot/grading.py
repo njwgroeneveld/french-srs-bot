@@ -92,7 +92,22 @@ def levenshtein(a: str, b: str) -> int:
     return previous[-1]
 
 
-def _compare(answer: str, expected: str, lang: Lang, typo_min_length: int) -> tuple[Grade, Reason]:
+_SENTENCE_PUNCTUATION = re.compile(r"[,;:!?«»]")
+
+
+def sentence_form(text: str) -> str:
+    """A normalized sentence without the punctuation inside it.
+
+    A typed sentence is about the words: "Au rez-de-chaussée il y a" without its comma, or
+    "pièces?" against "pièces ?", is the same answer. Apostrophes and hyphens stay, they are
+    part of the words.
+    """
+    return re.sub(r" +", " ", _SENTENCE_PUNCTUATION.sub("", text)).strip()
+
+
+def _compare(
+    answer: str, expected: str, lang: Lang, typo_min_length: int, sentence: bool = False
+) -> tuple[Grade, Reason]:
     if answer == expected:
         return Grade.CORRECT, "exact"
     expected_number = as_number(expected)
@@ -109,20 +124,27 @@ def _compare(answer: str, expected: str, lang: Lang, typo_min_length: int) -> tu
     expected_bare = strip_article(expected_plain, lang)
     if answer_bare == expected_bare:
         return Grade.HARD, "article"
-    if len(expected_bare) >= typo_min_length and levenshtein(answer_bare, expected_bare) == 1:
+    # A long sentence has room for more slips than a word: two typos from 20 characters on.
+    limit = 2 if sentence and len(expected_bare) >= 20 else 1
+    if len(expected_bare) >= typo_min_length and levenshtein(answer_bare, expected_bare) <= limit:
         return Grade.HARD, "typo"
     return Grade.WRONG, "wrong"
 
 
-def grade(answer: str, accepted: list[str], lang: Lang, typo_min_length: int = 4) -> GradeResult:
+def grade(
+    answer: str, accepted: list[str], lang: Lang, typo_min_length: int = 4, *, sentence: bool = False
+) -> GradeResult:
     if not accepted:
         raise ValueError("a card needs at least one accepted answer")
     typed = normalize(answer)
     if typed in ("", "?"):
         return GradeResult(Grade.WRONG, "wrong", accepted[0])
+    if sentence:
+        typed = sentence_form(typed)
     best = GradeResult(Grade.WRONG, "wrong", accepted[0])
     for expected in accepted:
-        result, reason = _compare(typed, normalize(expected), lang, typo_min_length)
+        target = sentence_form(normalize(expected)) if sentence else normalize(expected)
+        result, reason = _compare(typed, target, lang, typo_min_length, sentence)
         if _RANK[result] > _RANK[best.grade]:
             best = GradeResult(result, reason, expected)
     return best

@@ -522,3 +522,36 @@ def test_grammar_ignores_the_daily_new_card_limit(conn, settings, user, add_item
     step = session.start_batch(conn, settings, user.id, MORNING, kind="grammar")
     assert isinstance(step, session.Ask)
     assert step.card.kind == "grammar" and step.card.direction == "gap"
+
+
+# --- sentence cards ------------------------------------------------------------------------
+
+
+def add_sentence(conn):
+    theme_id = db.upsert_theme(
+        conn, source="test", source_ref="theme/s1", level="A1.1",
+        name="Zinnen U7 · S'informer sur un logement", position=1,
+    )
+    item_id = db.upsert_item(
+        conn, theme_id=theme_id, position=1, french=["Il y a combien de pièces ?"],
+        dutch=["Hoeveel kamers zijn er?"], english=None, gender=None, hint=None, kind="sentence",
+    )
+    db.sync_cards(conn)
+    return item_id
+
+
+def test_a_sentence_card_is_introduced_although_it_is_nl_fr(conn, settings, user):
+    add_sentence(conn)
+    step = session.start_batch(conn, settings, user.id, MORNING)
+    assert (step.card.kind, step.card.direction) == ("sentence", "nl_fr")
+    assert session.needs_intro(step.card) is True
+    assert step.is_new is True
+
+
+def test_a_sentence_is_graded_mildly(conn, settings, scheduler, user):
+    add_sentence(conn)
+    step = session.start_batch(conn, settings, user.id, MORNING)
+    # Two typos in a 24-character sentence: forgiven only because answer passes sentence=True
+    # (a trailing "?" would prove nothing, normalize drops that for words too).
+    answered = do_card(conn, settings, scheduler, step, "Il y a conbien de pièses", MORNING, user_id=user.id)
+    assert (answered.result.grade, answered.result.reason) == (Grade.HARD, "typo")

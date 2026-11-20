@@ -201,3 +201,15 @@ def test_override_texts():
 def test_no_grammar_due_points_at_the_words():
     text = messages.no_grammar_due()
     assert "/practice" in text
+
+
+def test_intro_of_a_sentence_says_new_sentence():
+    card = CardView(
+        card_id=1, item_id=1, direction="nl_fr", french=["Il y a combien de pièces ?"],
+        dutch=["Hoeveel kamers zijn er?"], gender=None, hint=None, introduced_at=None, srs=None,
+        kind="sentence",
+    )
+    text = messages.intro(card)
+    assert text.startswith("🆕 <b>Nieuwe zin</b>")
+    assert "<b>Il y a combien de pièces ?</b> = <b>Hoeveel kamers zijn er?</b>" in text
+    assert messages.intro(make_card()).startswith("🆕 <b>Nieuw woord</b>")

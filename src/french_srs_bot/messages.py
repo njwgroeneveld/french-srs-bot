@@ -183,7 +183,8 @@ def focus_unknown(text: str) -> str:
 
 
 def intro(card: CardView) -> str:
-    return f"🆕 <b>Nieuw woord</b>\n\n{_answer_line(card)}"
+    title = "Nieuwe zin" if card.kind == "sentence" else "Nieuw woord"
+    return f"🆕 <b>{title}</b>\n\n{_answer_line(card)}"
 
 
 def prompt(card: CardView) -> str:

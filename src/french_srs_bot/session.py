@@ -99,8 +99,11 @@ def needs_intro(card: CardView) -> bool:
     Only when the *word* is new, not when only the direction is. A NL->FR card is offered
     exclusively once its FR->NL sibling was learned on an earlier day (see db.next_new_card),
     so the word has been seen: introducing it again would hand over the answer.
+
+    A sentence is the exception: it only has its NL->FR card and is never seen FR->NL first,
+    so the intro is the first time it is shown at all.
     """
-    return card.direction == "fr_nl"
+    return card.direction == "fr_nl" or card.kind == "sentence"
 
 
 def pick_next(
@@ -205,7 +208,9 @@ def answer(
     card = db.get_card(conn, state.pending_card_id, user_id=user_id)
     if card is None:
         return None
-    result = grade(text, card.accepted, card.answer_lang, settings.typo_min_length)
+    result = grade(
+        text, card.accepted, card.answer_lang, settings.typo_min_length, sentence=card.kind == "sentence"
+    )
     return _record(conn, settings, scheduler, card, text, result, now, state, user_id=user_id)
 
 
